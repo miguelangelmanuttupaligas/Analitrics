@@ -19,14 +19,19 @@ En `/home/miguel/DataAI5/librechat/.env` debes tener al menos:
 PORT=3080
 RAG_PORT=8000
 OPENAI_API_KEY=tu_clave_real
+RAG_OPENAI_API_KEY=tu_clave_real
+JWT_SECRET=64_hex
+JWT_REFRESH_SECRET=64_hex
+CREDS_KEY=64_hex
+CREDS_IV=32_hex
 ANALITRICS_POSTGRES_DB=analitrics
 ANALITRICS_POSTGRES_USER=analitrics
 ANALITRICS_POSTGRES_PASSWORD=cambia_esta_clave
 ANALITRICS_POSTGRES_PORT=5436
 
-VECTOR_DB_NAME=mydatabase
-VECTOR_DB_USER=myuser
-VECTOR_DB_PASSWORD=mypassword
+VECTOR_DB_NAME=analitrics_rag
+VECTOR_DB_USER=analitrics_rag
+VECTOR_DB_PASSWORD=cambia_esta_clave_tambien
 
 WORKER_MODEL=gpt-4.1-mini
 CONTEXT_MAX_ASSETS=4
@@ -145,7 +150,17 @@ Verifica:
 docker ps
 docker logs -f analitrics-api
 docker logs -f analitrics-extension
+docker compose -f docker-compose.prod.yml ps
 ```
+
+Healthchecks esperados:
+
+- `analitrics-mongodb`: healthy
+- `analitrics-vectordb`: healthy
+- `analitrics-rag-api`: healthy
+- `analitrics-postgres`: healthy
+- `analitrics-extension`: healthy
+- `analitrics-api`: healthy
 
 La web quedará sirviendo en:
 
@@ -210,11 +225,33 @@ No hace falta exponer públicamente:
 
 Todo eso debe quedar interno en Docker.
 
-## 9. Resumen práctico
+## 9. Operación esperada
+
+Características del compose productivo:
+
+- nombres finales de contenedores con prefijo `analitrics-`
+- `restart: unless-stopped` en todos los servicios
+- `healthchecks` en API, MongoDB, PostgreSQL, VectorDB, RAG API y extensión
+- dependencias por salud para evitar arranques a medias
+- volúmenes Docker nativos y persistentes con nombre fijo para evitar problemas de permisos del host
+- solo `3080/tcp` expuesto públicamente
+
+Volúmenes persistentes definitivos creados por el stack:
+
+- `analitrics_mongodb_data`
+- `analitrics_uploads_data`
+- `analitrics_logs_data`
+- `analitrics_rag_pgdata`
+- `analitrics_postgres_data`
+
+Esos son los volúmenes que debes respaldar si luego quieres migrar la instalación o conservar estado.
+
+## 10. Resumen práctico
 
 1. Edita `.env`
 2. Edita `librechat.yaml`
 3. Levanta con `docker compose -f docker-compose.prod.yml up -d --build`
-4. Haz que Nginx apunte a `127.0.0.1:3080`
-5. Recarga Nginx
-6. Prueba el subdominio
+4. Espera a que todos los contenedores queden `healthy`
+5. Haz que Nginx apunte a `127.0.0.1:3080`
+6. Recarga Nginx
+7. Prueba el dominio

@@ -8,7 +8,6 @@ services:
       args:
         NODE_MAX_OLD_SPACE_SIZE: 8192
     restart: always
-    user: "${UID}:${GID}"
     depends_on:
       - mongodb
       - rag_api
@@ -27,18 +26,17 @@ services:
       - type: bind
         source: ./.env
         target: /app/.env
-      - ./uploads:/app/uploads
-      - ./logs:/app/logs
+      - librechat_uploads:/app/uploads
+      - librechat_logs:/app/logs
       - ./librechat.yaml:/app/librechat.yaml
 
   mongodb:
     container_name: librechat-mongodb-local
     image: mongo:8.0.20
     restart: always
-    user: "${UID}:${GID}"
     command: mongod --noauth
     volumes:
-      - ./data-node:/data/db
+      - librechat_mongodb_data:/data/db
 
   vectordb:
     container_name: librechat-vectordb-local
@@ -63,7 +61,7 @@ services:
       - DB_HOST=vectordb
       - RAG_PORT=${RAG_PORT:-8000}
     volumes:
-      - ./uploads:/app/uploads
+      - librechat_uploads:/app/uploads
 
   analitrics-postgres:
     container_name: analitrics-postgres-local
@@ -102,8 +100,11 @@ services:
       - CONTEXT_MAX_COLUMNS_PER_TABLE=12
       - CONTEXT_MAX_SAMPLE_ROWS_PER_TABLE=3
     volumes:
-      - ./uploads:/data/librechat-uploads:ro
+      - librechat_uploads:/data/librechat-uploads:ro
 
 volumes:
+  librechat_mongodb_data:
+  librechat_uploads:
+  librechat_logs:
   librechat_pgdata:
   analitrics_postgres_data:
