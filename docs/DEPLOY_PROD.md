@@ -183,46 +183,51 @@ La web quedará sirviendo en:
 
 ## 6. Reapuntar Nginx
 
-Si ya tienes un `sites-available/analitrics`, solo debes hacer que el `proxy_pass` apunte a:
+Usa este template listo para producción:
 
-- `http://127.0.0.1:3080`
+- [nginx-analitrics.conf](/home/miguel/DataAI5/docs/nginx-analitrics.conf)
 
-Bloque típico:
+Destino esperado en la VM:
 
-```nginx
-server {
-    listen 80;
-    server_name subdominio.dominio.com;
+- `/etc/nginx/sites-available/analitrics`
 
-    location / {
-        proxy_pass http://127.0.0.1:3080;
-        proxy_http_version 1.1;
+Ese archivo ya incluye:
 
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-    }
-}
-```
+- `server_name analitrics.com www.analitrics.com`
+- `proxy_pass http://127.0.0.1:3080`
+- redirección HTTP -> HTTPS
+- redirección `www` -> dominio raíz
+- paths estándar de certificados de Certbot:
+  - `/etc/letsencrypt/live/analitrics.com/fullchain.pem`
+  - `/etc/letsencrypt/live/analitrics.com/privkey.pem`
+- `location /.well-known/acme-challenge/` para validación ACME
+- soporte para WebSocket
+- `client_max_body_size 100M`
 
 Luego:
 
 ```bash
+sudo mkdir -p /var/www/certbot
+sudo cp /opt/librechat/docs/nginx-analitrics.conf /etc/nginx/sites-available/analitrics
+sudo ln -sf /etc/nginx/sites-available/analitrics /etc/nginx/sites-enabled/analitrics
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
 ## 7. Si usas HTTPS con certbot
 
-Una vez que el subdominio resuelva a la VM:
+Una vez que `analitrics.com` y `www.analitrics.com` resuelvan a `167.86.78.111`:
 
 ```bash
-sudo certbot --nginx -d subdominio.dominio.com
+sudo certbot certonly --webroot -w /var/www/certbot -d analitrics.com -d www.analitrics.com
+sudo nginx -t
+sudo systemctl reload nginx
 ```
+
+El template ya apunta a los paths que Certbot deja por defecto:
+
+- `/etc/letsencrypt/live/analitrics.com/fullchain.pem`
+- `/etc/letsencrypt/live/analitrics.com/privkey.pem`
 
 ## 8. Qué puerto debe ver Nginx
 
