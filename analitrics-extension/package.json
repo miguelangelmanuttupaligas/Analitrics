@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/server.ts",
     "eval:sprint1": "tsx src/evalSprint1.ts",
+    "eval:sprint2": "tsx src/evalSprint1.ts",
     "start": "node dist/server.js"
   },
   "dependencies": {

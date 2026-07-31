@@ -100,6 +100,10 @@ export async function initPostgres(): Promise<void> {
       started_at timestamptz not null default now(),
       completed_at timestamptz,
       elapsed_ms integer,
+      prompt_tokens integer,
+      completion_tokens integer,
+      total_tokens integer,
+      estimated_cost_usd numeric(14, 8),
       result_summary text,
       error text,
       metadata_json jsonb not null default '{}'::jsonb
@@ -139,6 +143,9 @@ export async function initPostgres(): Promise<void> {
       prompt_tokens integer,
       completion_tokens integer,
       total_tokens integer,
+      input_cost_usd numeric(14, 8),
+      output_cost_usd numeric(14, 8),
+      total_cost_usd numeric(14, 8),
       input_chars integer not null,
       output_chars integer,
       parse_ok boolean,
@@ -151,6 +158,60 @@ export async function initPostgres(): Promise<void> {
       on analitrics_meta.agent_llm_calls(run_id, worker_name, created_at);
     create index if not exists agent_llm_calls_worker_status_idx
       on analitrics_meta.agent_llm_calls(worker_name, status, created_at desc);
+
+    alter table analitrics_meta.agent_runs
+      add column if not exists prompt_tokens integer;
+    alter table analitrics_meta.agent_runs
+      add column if not exists completion_tokens integer;
+    alter table analitrics_meta.agent_runs
+      add column if not exists total_tokens integer;
+    alter table analitrics_meta.agent_runs
+      add column if not exists estimated_cost_usd numeric(14, 8);
+
+    alter table analitrics_meta.agent_llm_calls
+      add column if not exists input_cost_usd numeric(14, 8);
+    alter table analitrics_meta.agent_llm_calls
+      add column if not exists output_cost_usd numeric(14, 8);
+    alter table analitrics_meta.agent_llm_calls
+      add column if not exists total_cost_usd numeric(14, 8);
+
+    create table if not exists analitrics_meta.eval_runs (
+      eval_run_id uuid primary key,
+      suite_name text not null,
+      user_id text not null,
+      conversation_id text,
+      filename text,
+      flows text[] not null,
+      status text not null default 'running',
+      started_at timestamptz not null default now(),
+      completed_at timestamptz,
+      elapsed_ms integer,
+      passed_count integer,
+      failed_count integer,
+      total_count integer,
+      estimated_cost_usd numeric(14, 8),
+      metadata_json jsonb not null default '{}'::jsonb
+    );
+
+    create table if not exists analitrics_meta.eval_case_results (
+      id bigserial primary key,
+      eval_run_id uuid not null references analitrics_meta.eval_runs(eval_run_id) on delete cascade,
+      case_id text not null,
+      flow_mode text not null,
+      agent_run_id uuid references analitrics_meta.agent_runs(run_id) on delete set null,
+      status text not null,
+      elapsed_ms integer not null,
+      expected_json jsonb not null default '{}'::jsonb,
+      checks_json jsonb not null default '{}'::jsonb,
+      answer_preview text,
+      sql text,
+      error text,
+      estimated_cost_usd numeric(14, 8),
+      created_at timestamptz not null default now()
+    );
+
+    create index if not exists eval_case_results_eval_run_idx
+      on analitrics_meta.eval_case_results(eval_run_id, flow_mode, case_id);
 
     update analitrics_meta.conversation_file_contexts c
     set

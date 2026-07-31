@@ -1,6 +1,7 @@
 import { closeConnections, initPostgres, pg } from './db.js';
 import { answerWithDirectFileContext } from './services/directFileAnswer.js';
 import { orchestrateAnalyticsRequest } from './services/orchestrator.js';
+import { randomUUID } from 'node:crypto';
 
 type EvalFlow = 'direct_file' | 'graph';
 
@@ -11,6 +12,10 @@ type EvalCase = {
   expectsSql: boolean;
   expectsResource: boolean;
   expectsFileContext: boolean;
+  expectedMetric?: string;
+  expectedDimension?: string;
+  mustUseColumns?: string[];
+  expectedAnswerTerms?: string[];
 };
 
 type EvalResult = {
@@ -22,6 +27,7 @@ type EvalResult = {
   answerPreview: string;
   sql?: string;
   runId?: string;
+  estimatedCostUsd?: number;
   error?: string;
 };
 
@@ -33,6 +39,7 @@ const evalCases: EvalCase[] = [
     expectsSql: false,
     expectsResource: false,
     expectsFileContext: true,
+    expectedAnswerTerms: ['registros', 'columnas', 'producto'],
   },
   {
     id: 'top_country_courses',
@@ -41,6 +48,10 @@ const evalCases: EvalCase[] = [
     expectsSql: true,
     expectsResource: true,
     expectsFileContext: true,
+    expectedMetric: 'monto',
+    expectedDimension: 'pais',
+    mustUseColumns: ['pais', 'monto'],
+    expectedAnswerTerms: ['Perú'],
   },
   {
     id: 'amount_by_country',
@@ -49,6 +60,10 @@ const evalCases: EvalCase[] = [
     expectsSql: true,
     expectsResource: true,
     expectsFileContext: true,
+    expectedMetric: 'monto',
+    expectedDimension: 'pais',
+    mustUseColumns: ['pais', 'monto'],
+    expectedAnswerTerms: ['Perú'],
   },
   {
     id: 'top_products_chart',
@@ -57,6 +72,9 @@ const evalCases: EvalCase[] = [
     expectsSql: true,
     expectsResource: true,
     expectsFileContext: true,
+    expectedMetric: 'monto',
+    expectedDimension: 'producto',
+    mustUseColumns: ['producto', 'monto'],
   },
   {
     id: 'country_quality',
@@ -65,6 +83,9 @@ const evalCases: EvalCase[] = [
     expectsSql: true,
     expectsResource: false,
     expectsFileContext: true,
+    expectedDimension: 'pais',
+    mustUseColumns: ['pais'],
+    expectedAnswerTerms: ['país'],
   },
   {
     id: 'executive_findings',
@@ -73,6 +94,7 @@ const evalCases: EvalCase[] = [
     expectsSql: false,
     expectsResource: false,
     expectsFileContext: true,
+    expectedAnswerTerms: ['hallazgo'],
   },
   {
     id: 'corporate_enrichment',
@@ -81,6 +103,7 @@ const evalCases: EvalCase[] = [
     expectsSql: false,
     expectsResource: false,
     expectsFileContext: true,
+    expectedAnswerTerms: ['corporativo'],
   },
 ];
 
@@ -116,6 +139,37 @@ function preview(value: string, maxLength = 220): string {
 
 function asksForReload(answer: string): boolean {
   return /(carg(a|ue|ues|ar)|proporcion(a|e|es|ar)).{0,40}archivo/i.test(answer);
+}
+
+function includesAllTerms(value: string | undefined, terms: string[] = []): boolean {
+  const normalized = (value ?? '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+  return terms.every((term) =>
+    normalized.includes(
+      term
+        .normalize('NFD')
+        .replace(/\p{Diacritic}/gu, '')
+        .toLowerCase(),
+    ),
+  );
+}
+
+async function getRunCost(runId: string | undefined): Promise<number | undefined> {
+  if (!runId) {
+    return undefined;
+  }
+  const result = await pg.query<{ estimated_cost_usd: string | null }>(
+    `
+      select estimated_cost_usd
+      from analitrics_meta.agent_runs
+      where run_id = $1
+    `,
+    [runId],
+  );
+  const raw = result.rows[0]?.estimated_cost_usd;
+  return raw == null ? undefined : Number(raw);
 }
 
 async function resolveEvalContext(): Promise<{ userId: string; conversationId: string; filename?: string }> {
@@ -175,7 +229,24 @@ async function runCase(flow: EvalFlow, testCase: EvalCase, context: { userId: st
         fileContext: testCase.expectsFileContext ? Boolean(result.snapshot?.activeFile.available) : true,
         noReloadRequest: !asksForReload(answer),
         spanishAnswer: /[áéíóúñ]|\b(el|la|los|las|archivo|datos|ventas|país)\b/i.test(answer),
+        expectedMetric: testCase.expectedMetric
+          ? includesAllTerms([result.plan?.sql, result.plan?.rationale, answer].filter(Boolean).join('\n'), [
+              testCase.expectedMetric,
+            ])
+          : true,
+        expectedDimension: testCase.expectedDimension
+          ? includesAllTerms([result.plan?.sql, result.plan?.rationale, answer].filter(Boolean).join('\n'), [
+              testCase.expectedDimension,
+            ])
+          : true,
+        mustUseColumns: testCase.mustUseColumns?.length
+          ? includesAllTerms(result.plan?.sql, testCase.mustUseColumns)
+          : true,
+        answerTerms: testCase.expectedAnswerTerms?.length
+          ? includesAllTerms(answer, testCase.expectedAnswerTerms)
+          : true,
       };
+      const estimatedCostUsd = await getRunCost(result.observabilityRunId);
 
       return {
         caseId: testCase.id,
@@ -186,6 +257,7 @@ async function runCase(flow: EvalFlow, testCase: EvalCase, context: { userId: st
         answerPreview: preview(answer),
         sql: result.plan?.sql,
         runId: result.observabilityRunId,
+        estimatedCostUsd,
       };
     }
 
@@ -202,7 +274,24 @@ async function runCase(flow: EvalFlow, testCase: EvalCase, context: { userId: st
       noReloadRequest: !asksForReload(result.answer),
       spanishAnswer: /[áéíóúñ]|\b(el|la|los|las|archivo|datos|ventas|país)\b/i.test(result.answer),
       validation: result.validation.approved || result.validation.shouldEscalateToClarification,
+      expectedMetric: testCase.expectedMetric
+        ? includesAllTerms([result.plan.sql, result.plan.objective, result.answer].join('\n'), [
+            testCase.expectedMetric,
+          ])
+        : true,
+      expectedDimension: testCase.expectedDimension
+        ? includesAllTerms([result.plan.sql, result.plan.objective, result.answer].join('\n'), [
+            testCase.expectedDimension,
+          ])
+        : true,
+      mustUseColumns: testCase.mustUseColumns?.length
+        ? includesAllTerms(result.plan.sql, testCase.mustUseColumns)
+        : true,
+      answerTerms: testCase.expectedAnswerTerms?.length
+        ? includesAllTerms(result.answer, testCase.expectedAnswerTerms)
+        : true,
     };
+    const estimatedCostUsd = await getRunCost(result.execution.observabilityRunId);
 
     return {
       caseId: testCase.id,
@@ -213,6 +302,7 @@ async function runCase(flow: EvalFlow, testCase: EvalCase, context: { userId: st
       answerPreview: preview(result.answer),
       sql: result.plan.sql,
       runId: result.execution.observabilityRunId,
+      estimatedCostUsd,
     };
   } catch (error) {
     return {
@@ -227,19 +317,106 @@ async function runCase(flow: EvalFlow, testCase: EvalCase, context: { userId: st
   }
 }
 
+async function startEvalRun(params: {
+  suiteName: string;
+  context: { userId: string; conversationId: string; filename?: string };
+  flows: EvalFlow[];
+}): Promise<string> {
+  const evalRunId = randomUUID();
+  await pg.query(
+    `
+      insert into analitrics_meta.eval_runs(
+        eval_run_id, suite_name, user_id, conversation_id, filename, flows
+      )
+      values ($1, $2, $3, $4, $5, $6)
+    `,
+    [
+      evalRunId,
+      params.suiteName,
+      params.context.userId,
+      params.context.conversationId,
+      params.context.filename ?? null,
+      params.flows,
+    ],
+  );
+  return evalRunId;
+}
+
+async function recordEvalCaseResult(
+  evalRunId: string,
+  testCase: EvalCase,
+  result: EvalResult,
+): Promise<void> {
+  await pg.query(
+    `
+      insert into analitrics_meta.eval_case_results(
+        eval_run_id, case_id, flow_mode, agent_run_id, status, elapsed_ms,
+        expected_json, checks_json, answer_preview, sql, error, estimated_cost_usd
+      )
+      values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11, $12)
+    `,
+    [
+      evalRunId,
+      result.caseId,
+      result.flow,
+      result.runId ?? null,
+      result.ok ? 'ok' : 'failed',
+      result.elapsedMs,
+      JSON.stringify({
+        expectedModes: testCase.expectedModes,
+        expectsSql: testCase.expectsSql,
+        expectsResource: testCase.expectsResource,
+        expectsFileContext: testCase.expectsFileContext,
+        expectedMetric: testCase.expectedMetric,
+        expectedDimension: testCase.expectedDimension,
+        mustUseColumns: testCase.mustUseColumns,
+        expectedAnswerTerms: testCase.expectedAnswerTerms,
+      }),
+      JSON.stringify(result.checks),
+      result.answerPreview,
+      result.sql ?? null,
+      result.error ?? null,
+      result.estimatedCostUsd ?? null,
+    ],
+  );
+}
+
+async function finishEvalRun(evalRunId: string, results: EvalResult[]): Promise<void> {
+  const passed = results.filter((result) => result.ok).length;
+  const failed = results.length - passed;
+  const totalCost = results.reduce((sum, result) => sum + (result.estimatedCostUsd ?? 0), 0);
+  await pg.query(
+    `
+      update analitrics_meta.eval_runs
+      set
+        status = $2,
+        completed_at = now(),
+        elapsed_ms = greatest(0, floor(extract(epoch from (now() - started_at)) * 1000)::int),
+        passed_count = $3,
+        failed_count = $4,
+        total_count = $5,
+        estimated_cost_usd = $6
+      where eval_run_id = $1
+    `,
+    [evalRunId, failed > 0 ? 'failed' : 'ok', passed, failed, results.length, totalCost],
+  );
+}
+
 async function summarizeRecentRuns(): Promise<void> {
   const summary = await pg.query<{
     flow_mode: string;
     runs: string;
     avg_elapsed_ms: string | null;
     failed_runs: string;
+    estimated_cost_usd: string | null;
   }>(
     `
       select
         flow_mode,
         count(*)::text as runs,
         round(avg(elapsed_ms))::text as avg_elapsed_ms,
-        count(*) filter (where status <> 'ok')::text as failed_runs
+        count(*) filter (where status <> 'ok')::text as failed_runs,
+        round(sum(estimated_cost_usd), 8)::text as estimated_cost_usd
       from analitrics_meta.agent_runs
       where started_at > now() - interval '30 minutes'
       group by flow_mode
@@ -253,6 +430,7 @@ async function summarizeRecentRuns(): Promise<void> {
     avg_elapsed_ms: string | null;
     errors: string;
     avg_total_tokens: string | null;
+    estimated_cost_usd: string | null;
   }>(
     `
       select
@@ -260,7 +438,8 @@ async function summarizeRecentRuns(): Promise<void> {
         count(*)::text as calls,
         round(avg(elapsed_ms))::text as avg_elapsed_ms,
         count(*) filter (where status <> 'ok')::text as errors,
-        round(avg(total_tokens))::text as avg_total_tokens
+        round(avg(total_tokens))::text as avg_total_tokens,
+        round(sum(total_cost_usd), 8)::text as estimated_cost_usd
       from analitrics_meta.agent_llm_calls
       where created_at > now() - interval '30 minutes'
       group by worker_name
@@ -285,16 +464,23 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `Evaluando Sprint 1 con user=${context.userId}, conversation=${context.conversationId}, filename=${context.filename ?? 'auto'}, flow=${flows.join('+')}`,
+    `Evaluando Sprint 2 con user=${context.userId}, conversation=${context.conversationId}, filename=${context.filename ?? 'auto'}, flow=${flows.join('+')}`,
   );
 
+  const evalRunId = await startEvalRun({
+    suiteName: 'sprint2_comparison',
+    context,
+    flows,
+  });
   const results: EvalResult[] = [];
   for (const flow of flows) {
     for (const testCase of selectedCases) {
       console.log(`\n[${flow}] ${testCase.id}: ${testCase.question}`);
       const result = await runCase(flow, testCase, context);
       results.push(result);
-      console.log(result.ok ? 'OK' : 'FAIL', `${result.elapsedMs}ms`, result.answerPreview || result.error);
+      await recordEvalCaseResult(evalRunId, testCase, result);
+      const cost = result.estimatedCostUsd == null ? 'costo=N/D' : `costo=$${result.estimatedCostUsd.toFixed(6)}`;
+      console.log(result.ok ? 'OK' : 'FAIL', `${result.elapsedMs}ms`, cost, result.answerPreview || result.error);
       if (!result.ok) {
         console.log(JSON.stringify({ checks: result.checks, sql: result.sql, error: result.error }, null, 2));
       }
@@ -303,14 +489,38 @@ async function main(): Promise<void> {
 
   const passed = results.filter((result) => result.ok).length;
   const failed = results.length - passed;
-  console.log(`\nResultado Sprint 1: ${passed}/${results.length} correctas, ${failed} fallidas.`);
+  await finishEvalRun(evalRunId, results);
+  console.log(`\nResultado Sprint 2: ${passed}/${results.length} correctas, ${failed} fallidas.`);
   console.table(
     results.map((result) => ({
       case: result.caseId,
       flow: result.flow,
       ok: result.ok,
       elapsedMs: result.elapsedMs,
+      costUsd: result.estimatedCostUsd == null ? '' : result.estimatedCostUsd.toFixed(6),
       runId: result.runId ?? '',
+    })),
+  );
+  console.log('\nComparativo por flujo');
+  console.table(
+    Object.entries(
+      results.reduce<Record<string, { ok: number; total: number; elapsedMs: number; cost: number }>>(
+        (acc, result) => {
+          const current = acc[result.flow] ?? { ok: 0, total: 0, elapsedMs: 0, cost: 0 };
+          current.ok += result.ok ? 1 : 0;
+          current.total += 1;
+          current.elapsedMs += result.elapsedMs;
+          current.cost += result.estimatedCostUsd ?? 0;
+          acc[result.flow] = current;
+          return acc;
+        },
+        {},
+      ),
+    ).map(([flow, stats]) => ({
+      flow,
+      score: `${stats.ok}/${stats.total}`,
+      avgElapsedMs: Math.round(stats.elapsedMs / stats.total),
+      estimatedCostUsd: stats.cost.toFixed(6),
     })),
   );
   await summarizeRecentRuns();
