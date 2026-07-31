@@ -1,0 +1,109 @@
+services:
+  api:
+    container_name: librechat-api-local
+    image: analitrics/librechat-custom:v0.8.7
+    build:
+      context: ../librechat-build-src
+      dockerfile: Dockerfile
+      args:
+        NODE_MAX_OLD_SPACE_SIZE: 8192
+    restart: always
+    user: "${UID}:${GID}"
+    depends_on:
+      - mongodb
+      - rag_api
+      - analitrics-extension
+      - analitrics-postgres
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${PORT}:${PORT}"
+    environment:
+      - HOST=0.0.0.0
+      - MONGO_URI=mongodb://mongodb:27017/LibreChat
+      - RAG_PORT=${RAG_PORT:-8000}
+      - RAG_API_URL=http://rag_api:${RAG_PORT:-8000}
+    volumes:
+      - type: bind
+        source: ./.env
+        target: /app/.env
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+      - ./librechat.yaml:/app/librechat.yaml
+
+  mongodb:
+    container_name: librechat-mongodb-local
+    image: mongo:8.0.20
+    restart: always
+    user: "${UID}:${GID}"
+    command: mongod --noauth
+    volumes:
+      - ./data-node:/data/db
+
+  vectordb:
+    container_name: librechat-vectordb-local
+    image: pgvector/pgvector:0.8.0-pg15-trixie
+    restart: always
+    environment:
+      POSTGRES_DB: mydatabase
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mypassword
+    volumes:
+      - librechat_pgdata:/var/lib/postgresql/data
+
+  rag_api:
+    container_name: librechat-rag-api-local
+    image: registry.librechat.ai/danny-avila/librechat-rag-api-dev-lite:latest
+    restart: always
+    depends_on:
+      - vectordb
+    env_file:
+      - .env
+    environment:
+      - DB_HOST=vectordb
+      - RAG_PORT=${RAG_PORT:-8000}
+    volumes:
+      - ./uploads:/app/uploads
+
+  analitrics-postgres:
+    container_name: analitrics-postgres-local
+    image: postgres:17
+    restart: always
+    environment:
+      POSTGRES_DB: ${ANALITRICS_POSTGRES_DB:-analitrics}
+      POSTGRES_USER: ${ANALITRICS_POSTGRES_USER:-analitrics}
+      POSTGRES_PASSWORD: ${ANALITRICS_POSTGRES_PASSWORD:-analitrics_local_2026}
+    ports:
+      - "127.0.0.1:${ANALITRICS_POSTGRES_PORT:-5436}:5432"
+    volumes:
+      - analitrics_postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+
+  analitrics-extension:
+    container_name: analitrics-extension-local
+    build:
+      context: ../analitrics-extension
+      dockerfile: Dockerfile
+    restart: always
+    depends_on:
+      - analitrics-postgres
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - PORT=3095
+      - POSTGRES_URL=postgresql://${ANALITRICS_POSTGRES_USER:-analitrics}:${ANALITRICS_POSTGRES_PASSWORD:-analitrics_local_2026}@analitrics-postgres:5432/${ANALITRICS_POSTGRES_DB:-analitrics}
+      - MONGO_URL=mongodb://mongodb:27017/LibreChat
+      - LIBRECHAT_UPLOAD_ROOT=/data/librechat-uploads
+      - ALLOWED_USER_HEADER=x-librechat-user-id
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - WORKER_MODEL=gpt-4.1-mini
+      - CONTEXT_MAX_ASSETS=4
+      - CONTEXT_MAX_TABLES_PER_ASSET=3
+      - CONTEXT_MAX_COLUMNS_PER_TABLE=12
+      - CONTEXT_MAX_SAMPLE_ROWS_PER_TABLE=3
+    volumes:
+      - ./uploads:/data/librechat-uploads:ro
+
+volumes:
+  librechat_pgdata:
+  analitrics_postgres_data:

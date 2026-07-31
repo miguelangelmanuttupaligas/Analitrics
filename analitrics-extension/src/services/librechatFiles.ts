@@ -1,0 +1,204 @@
+import path from 'path';
+import { getMongoDb } from '../db.js';
+import { config, tabularMimeTypes } from '../config.js';
+import type { DiscoveredAttachment, LibreChatMessage } from '../types.js';
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function listRecentTabularAttachments(limit = 25): Promise<DiscoveredAttachment[]> {
+  const db = await getMongoDb();
+  const messages = db.collection<LibreChatMessage>('messages');
+  const docs = await messages
+    .find(
+      {
+        isCreatedByUser: true,
+        files: { $exists: true, $ne: [] },
+      },
+      {
+        projection: {
+          messageId: 1,
+          conversationId: 1,
+          createdAt: 1,
+          files: 1,
+        },
+        sort: { createdAt: -1 },
+        limit,
+      },
+    )
+    .toArray();
+
+  const attachments: DiscoveredAttachment[] = [];
+
+  for (const doc of docs) {
+    for (const file of doc.files ?? []) {
+      if (!file.user || !tabularMimeTypes.has(file.type)) {
+        continue;
+      }
+
+      const relative = file.filepath.replace(/^\/uploads\//, '');
+      attachments.push({
+        userId: String(file.user),
+        conversationId: doc.conversationId,
+        messageId: doc.messageId,
+        fileId: file.file_id,
+        filename: file.filename,
+        mimeType: file.type,
+        filepath: file.filepath,
+        absolutePath: path.join(config.LIBRECHAT_UPLOAD_ROOT, relative),
+        bytes: file.bytes ?? 0,
+      });
+    }
+  }
+
+  return attachments;
+}
+
+export async function findLatestTabularAttachment(params: {
+  userId: string;
+  conversationId?: string;
+  filename?: string;
+}): Promise<DiscoveredAttachment | null> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const attachment = await findLatestTabularAttachmentOnce(params);
+    if (attachment) {
+      return attachment;
+    }
+    if (attempt < 3) {
+      await sleep(400);
+    }
+  }
+  return null;
+}
+
+export async function listRecentTabularAttachmentsForUser(params: {
+  userId: string;
+  conversationId?: string;
+  filename?: string;
+  limit?: number;
+}): Promise<DiscoveredAttachment[]> {
+  const db = await getMongoDb();
+  const messages = db.collection<LibreChatMessage>('messages');
+  const query: Record<string, unknown> = {
+    isCreatedByUser: true,
+    files: { $exists: true, $ne: [] },
+  };
+
+  if (params.conversationId) {
+    query.conversationId = params.conversationId;
+  }
+
+  const docs = await messages
+    .find(query, {
+      projection: {
+        messageId: 1,
+        conversationId: 1,
+        createdAt: 1,
+        files: 1,
+      },
+      sort: { createdAt: -1 },
+      limit: Math.max(1, Math.min(params.limit ?? 12, 50)),
+    })
+    .toArray();
+
+  const seen = new Set<string>();
+  const attachments: DiscoveredAttachment[] = [];
+
+  for (const doc of docs) {
+    for (const file of doc.files ?? []) {
+      const belongsToUser = !file.user || String(file.user) === params.userId;
+      const matchesType = tabularMimeTypes.has(file.type);
+      const matchesFilename = params.filename
+        ? file.filename.toLowerCase() === params.filename.toLowerCase()
+        : true;
+
+      if (!belongsToUser || !matchesType || !matchesFilename || seen.has(file.file_id)) {
+        continue;
+      }
+
+      const relative = file.filepath.replace(/^\/uploads\//, '');
+      attachments.push({
+        userId: params.userId,
+        conversationId: doc.conversationId,
+        messageId: doc.messageId,
+        fileId: file.file_id,
+        filename: file.filename,
+        mimeType: file.type,
+        filepath: file.filepath,
+        absolutePath: path.join(config.LIBRECHAT_UPLOAD_ROOT, relative),
+        bytes: file.bytes ?? 0,
+      });
+      seen.add(file.file_id);
+    }
+  }
+
+  return attachments;
+}
+
+async function findLatestTabularAttachmentOnce(params: {
+  userId: string;
+  conversationId?: string;
+  filename?: string;
+}): Promise<DiscoveredAttachment | null> {
+  const db = await getMongoDb();
+  const messages = db.collection<LibreChatMessage>('messages');
+  const baseQuery: Record<string, unknown> = {
+    isCreatedByUser: true,
+    files: { $exists: true, $ne: [] },
+  };
+
+  const queries: Record<string, unknown>[] = [];
+  if (params.conversationId) {
+    queries.push({
+      ...baseQuery,
+      conversationId: params.conversationId,
+    });
+  }
+  queries.push(baseQuery);
+
+  for (const query of queries) {
+    const docs = await messages
+      .find(query, {
+        projection: {
+          messageId: 1,
+          conversationId: 1,
+          createdAt: 1,
+          files: 1,
+        },
+        sort: { createdAt: -1 },
+        limit: 25,
+      })
+      .toArray();
+
+    for (const doc of docs) {
+      const attachment = (doc.files ?? []).find((file) => {
+        const belongsToUser = !file.user || String(file.user) === params.userId;
+        const matchesType = tabularMimeTypes.has(file.type);
+        const matchesFilename = params.filename
+          ? file.filename.toLowerCase() === params.filename.toLowerCase()
+          : true;
+        return belongsToUser && matchesType && matchesFilename;
+      });
+
+      if (!attachment) {
+        continue;
+      }
+
+      const relative = attachment.filepath.replace(/^\/uploads\//, '');
+      return {
+        userId: params.userId,
+        conversationId: doc.conversationId,
+        messageId: doc.messageId,
+        fileId: attachment.file_id,
+        filename: attachment.filename,
+        mimeType: attachment.type,
+        filepath: attachment.filepath,
+        absolutePath: path.join(config.LIBRECHAT_UPLOAD_ROOT, relative),
+        bytes: attachment.bytes ?? 0,
+      };
+    }
+  }
+
+  return null;
+}

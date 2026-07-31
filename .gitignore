@@ -1,0 +1,29 @@
+.DS_Store
+
+# Root deployment secrets
+*.log
+
+# Local env secrets
+librechat/.env
+
+# Runtime data
+librechat/uploads/
+librechat/logs/
+librechat/data-node/
+librechat/meili_data_v1.35.1/
+librechat/recovered-dist/
+librechat/frontend-work/
+librechat/mcp-postgres/node_modules/
+
+# Local build/runtime outputs
+analitrics-extension/node_modules/
+analitrics-extension/dist/
+librechat-build-src/node_modules/
+librechat-build-src/client/dist/
+librechat-build-src/api/dist/
+librechat-build-src/packages/*/dist/
+librechat-build-src/.turbo/
+
+# Editor / OS noise
+librechat-build-src/.vscode/
+librechat-build-src/.idea/
