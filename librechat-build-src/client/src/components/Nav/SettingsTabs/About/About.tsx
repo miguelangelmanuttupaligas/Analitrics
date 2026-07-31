@@ -23,15 +23,16 @@ function formatBuildDate(raw: string | null | undefined): string {
 }
 
 function buildDiagnosticsBlob(
+  localize: ReturnType<typeof useLocalize>,
   version: string,
   buildInfo: TStartupConfig['buildInfo'] | undefined,
 ): string {
   const lines: string[] = [
-    `Analitrics version: ${version}`,
-    `Commit: ${buildInfo?.commit ?? UNKNOWN_PLACEHOLDER}`,
-    `Branch: ${buildInfo?.branch ?? UNKNOWN_PLACEHOLDER}`,
-    `Build date: ${formatBuildDate(buildInfo?.buildDate)}`,
-    `User agent: ${typeof navigator !== 'undefined' ? navigator.userAgent : UNKNOWN_PLACEHOLDER}`,
+    `${localize('com_nav_about_version')}: ${version}`,
+    `${localize('com_nav_about_commit')}: ${buildInfo?.commit ?? UNKNOWN_PLACEHOLDER}`,
+    `${localize('com_nav_about_branch')}: ${buildInfo?.branch ?? UNKNOWN_PLACEHOLDER}`,
+    `${localize('com_nav_about_build_date')}: ${formatBuildDate(buildInfo?.buildDate)}`,
+    `${localize('com_nav_about_user_agent')}: ${typeof navigator !== 'undefined' ? navigator.userAgent : UNKNOWN_PLACEHOLDER}`,
   ];
   return lines.join('\n');
 }
@@ -55,8 +56,8 @@ function About() {
   const version: string = Constants.VERSION;
 
   const diagnosticsBlob = useMemo(
-    () => buildDiagnosticsBlob(version, buildInfo),
-    [version, buildInfo],
+    () => buildDiagnosticsBlob(localize, version, buildInfo),
+    [localize, version, buildInfo],
   );
 
   useEffect(

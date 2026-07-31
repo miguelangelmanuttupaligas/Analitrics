@@ -21,10 +21,7 @@ const readStoredLang = () => {
 };
 
 const defaultLang = () => {
-  const userLang =
-    (typeof navigator !== 'undefined' ? navigator.language || navigator.languages?.[0] : null) ??
-    'en';
-  return Cookies.get('lang') || readStoredLang() || userLang;
+  return Cookies.get('lang') || readStoredLang() || 'es';
 };
 
 const lang = atomWithLocalStorage('lang', defaultLang());
