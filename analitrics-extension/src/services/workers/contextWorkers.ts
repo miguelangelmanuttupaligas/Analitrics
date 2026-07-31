@@ -6,8 +6,9 @@ export async function runContextSelectionWorker(
   question: string,
   snapshot: ContextSnapshot,
 ): Promise<{ selectedUploadIds: string[]; rationale: string }> {
-  return callJsonWorker(
-    [
+  return callJsonWorker({
+    workerName: 'context_selection_worker',
+    systemPrompt: [
       'Eres el worker de selección de contexto de Analitrics.',
       'No respondas la pregunta del usuario.',
       'Debes elegir qué activos tabulares disponibles conviene mantener activos para esta consulta.',
@@ -22,12 +23,12 @@ export async function runContextSelectionWorker(
       'No inventes uploadIds.',
       'Devuelve solo JSON con selectedUploadIds y rationale.',
     ].join('\n'),
-    [
+    userPrompt: [
       `Pregunta:\n${question}`,
       `Contexto resumido:\n${buildWorkerContextBrief(snapshot)}`,
     ].join('\n\n'),
-    (value) => parseContextSelection(value, snapshot.budget.maxAssets),
-  );
+    parse: (value) => parseContextSelection(value, snapshot.budget.maxAssets),
+  });
 }
 
 export async function runSourceSelectionWorker(params: {
@@ -35,8 +36,9 @@ export async function runSourceSelectionWorker(params: {
   snapshot: ContextSnapshot;
 }): Promise<AnalyticsSourceSelection> {
   const { cleanedQuestion, snapshot } = params;
-  return callJsonWorker(
-    [
+  return callJsonWorker({
+    workerName: 'source_selection_worker',
+    systemPrompt: [
       'Eres el worker de selección de fuente de Analitrics.',
       'No respondas la pregunta del usuario.',
       'Debes elegir exactamente uno de estos modos de trabajo:',
@@ -51,10 +53,10 @@ export async function runSourceSelectionWorker(params: {
       'No inventes joins ni correspondencias inexistentes entre archivo y corporativo.',
       'Devuelve solo JSON con mode, rationale, needsClarification y clarificationQuestion.',
     ].join('\n'),
-    [
+    userPrompt: [
       `Pregunta limpia:\n${compactJson(cleanedQuestion)}`,
       `Contexto resumido:\n${buildWorkerContextBrief(snapshot)}`,
     ].join('\n\n'),
-    (value) => parseSourceSelection(value),
-  );
+    parse: (value) => parseSourceSelection(value),
+  });
 }

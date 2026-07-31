@@ -7,7 +7,7 @@ import type {
   ContextSnapshot,
 } from '../../types.js';
 import { callJsonWorker, callTextWorker } from '../llm.js';
-import { compactJson } from '../workerSupport.js';
+import { compactJson, parseValidation } from '../workerSupport.js';
 
 export async function runValidationWorker(params: {
   question: string;
@@ -19,8 +19,9 @@ export async function runValidationWorker(params: {
   draftedAnswer: string;
 }): Promise<AnalyticsValidation> {
   const { question, cleanedQuestion, snapshot, intent, plan, execution, draftedAnswer } = params;
-  return callJsonWorker(
-    [
+  return callJsonWorker({
+    workerName: 'validation_worker',
+    systemPrompt: [
       'Eres el worker de validación de Analitrics.',
       'Evalúa si la respuesta borrador cumple la intención y si se apoya en la evidencia ejecutada.',
       'Marca como no aprobado si:',
@@ -32,7 +33,7 @@ export async function runValidationWorker(params: {
       '- el plan introdujo un criterio de priorización, agregación o filtro que no aparece en la pregunta limpia y además ambiguityNotes sugiere que faltaba ese criterio.',
       'Devuelve solo JSON.',
     ].join('\n'),
-    [
+    userPrompt: [
       `Pregunta:\n${question}`,
       `Pregunta limpia:\n${compactJson(cleanedQuestion)}`,
       `Contexto:\n${compactJson(snapshot)}`,
@@ -41,22 +42,8 @@ export async function runValidationWorker(params: {
       `Ejecución:\n${compactJson(execution)}`,
       `Borrador de respuesta:\n${draftedAnswer}`,
     ].join('\n\n'),
-    (value) => ({
-      approved: typeof (value as Record<string, unknown>)?.approved === 'boolean' ? (value as Record<string, unknown>).approved as boolean : true,
-      issues: Array.isArray((value as Record<string, unknown>)?.issues) ? ((value as Record<string, unknown>).issues as unknown[]).map((item) => String(item)) : [],
-      suggestedFixes: Array.isArray((value as Record<string, unknown>)?.suggestedFixes)
-        ? ((value as Record<string, unknown>).suggestedFixes as unknown[]).map((item) => String(item))
-        : [],
-      shouldEscalateToClarification:
-        typeof (value as Record<string, unknown>)?.shouldEscalateToClarification === 'boolean'
-          ? ((value as Record<string, unknown>).shouldEscalateToClarification as boolean)
-          : false,
-      clarificationQuestion:
-        typeof (value as Record<string, unknown>)?.clarificationQuestion === 'string'
-          ? ((value as Record<string, unknown>).clarificationQuestion as string)
-          : '',
-    }),
-  );
+    parse: (value) => parseValidation(value),
+  });
 }
 
 export async function runValidationReconciliationWorker(params: {
@@ -70,8 +57,9 @@ export async function runValidationReconciliationWorker(params: {
   draftedAnswer: string;
 }): Promise<AnalyticsValidation> {
   const { question, cleanedQuestion, snapshot, intent, plan, execution, validation, draftedAnswer } = params;
-  return callJsonWorker(
-    [
+  return callJsonWorker({
+    workerName: 'validation_reconciliation_worker',
+    systemPrompt: [
       'Eres el worker de reconciliación de validación de Analitrics.',
       'Recibes una validación preliminar y debes ajustarla para que sea coherente con el contexto real.',
       'No inventes problemas inexistentes.',
@@ -80,7 +68,7 @@ export async function runValidationReconciliationWorker(params: {
       'Si la pregunta limpia conserva ambigüedad explícita y el plan impuso un criterio no pedido, mantén la desaprobación.',
       'Devuelve solo JSON.',
     ].join('\n'),
-    [
+    userPrompt: [
       `Pregunta:\n${question}`,
       `Pregunta limpia:\n${compactJson(cleanedQuestion)}`,
       `Intención:\n${compactJson(intent)}`,
@@ -90,22 +78,8 @@ export async function runValidationReconciliationWorker(params: {
       `Borrador:\n${draftedAnswer}`,
       `Validación preliminar:\n${compactJson(validation)}`,
     ].join('\n\n'),
-    (value) => ({
-      approved: typeof (value as Record<string, unknown>)?.approved === 'boolean' ? (value as Record<string, unknown>).approved as boolean : true,
-      issues: Array.isArray((value as Record<string, unknown>)?.issues) ? ((value as Record<string, unknown>).issues as unknown[]).map((item) => String(item)) : [],
-      suggestedFixes: Array.isArray((value as Record<string, unknown>)?.suggestedFixes)
-        ? ((value as Record<string, unknown>).suggestedFixes as unknown[]).map((item) => String(item))
-        : [],
-      shouldEscalateToClarification:
-        typeof (value as Record<string, unknown>)?.shouldEscalateToClarification === 'boolean'
-          ? ((value as Record<string, unknown>).shouldEscalateToClarification as boolean)
-          : false,
-      clarificationQuestion:
-        typeof (value as Record<string, unknown>)?.clarificationQuestion === 'string'
-          ? ((value as Record<string, unknown>).clarificationQuestion as string)
-          : '',
-    }),
-  );
+    parse: (value) => parseValidation(value),
+  });
 }
 
 export async function runAnswerWorker(params: {
@@ -118,8 +92,9 @@ export async function runAnswerWorker(params: {
   validationIssues?: string[];
 }): Promise<string> {
   const { question, cleanedQuestion, snapshot, intent, plan, execution, validationIssues = [] } = params;
-  return callTextWorker(
-    [
+  return callTextWorker({
+    workerName: 'answer_worker',
+    systemPrompt: [
       'Eres el worker de redacción de Analitrics.',
       'Redacta una respuesta final en español, directa y ejecutiva.',
       'Usa solo la evidencia entregada.',
@@ -130,7 +105,7 @@ export async function runAnswerWorker(params: {
         ? `Corrige estos problemas detectados: ${validationIssues.join(' | ')}`
         : 'No hay problemas de validación previos.',
     ].join('\n'),
-    [
+    userPrompt: [
       `Pregunta:\n${question}`,
       `Pregunta limpia:\n${compactJson(cleanedQuestion)}`,
       `Contexto:\n${compactJson(snapshot)}`,
@@ -138,7 +113,7 @@ export async function runAnswerWorker(params: {
       `Plan:\n${compactJson(plan)}`,
       `Ejecución:\n${compactJson(execution)}`,
     ].join('\n\n'),
-  );
+  });
 }
 
 export async function runResponseCleanupWorker(params: {
@@ -149,8 +124,9 @@ export async function runResponseCleanupWorker(params: {
   hasVisualResource: boolean;
 }): Promise<string> {
   const { originalQuestion, cleanedQuestion, answerDraft, responseMode, hasVisualResource } = params;
-  return callTextWorker(
-    [
+  return callTextWorker({
+    workerName: 'response_cleanup_worker',
+    systemPrompt: [
       'Eres el worker de limpieza de respuesta de Analitrics.',
       'Tu trabajo es mejorar claridad y tono sin cambiar el fondo.',
       'Reglas:',
@@ -161,14 +137,14 @@ export async function runResponseCleanupWorker(params: {
       '- si habrá recurso visual o tabla inline, deja intacto cualquier marcador \\ui{...};',
       '- si la respuesta es una aclaración, que sea corta y específica.',
     ].join('\n'),
-    [
+    userPrompt: [
       `Pregunta original:\n${originalQuestion}`,
       `Pregunta limpia:\n${compactJson(cleanedQuestion)}`,
       `Modo de respuesta esperado: ${responseMode}`,
       `¿Habrá recurso visual inline?: ${hasVisualResource ? 'sí' : 'no'}`,
       `Borrador:\n${answerDraft}`,
     ].join('\n\n'),
-  );
+  });
 }
 
 export async function runAnswerReconciliationWorker(params: {
@@ -179,8 +155,9 @@ export async function runAnswerReconciliationWorker(params: {
   answerDraft: string;
 }): Promise<string> {
   const { question, snapshot, plan, execution, answerDraft } = params;
-  return callTextWorker(
-    [
+  return callTextWorker({
+    workerName: 'answer_reconciliation_worker',
+    systemPrompt: [
       'Eres el worker de reconciliación de respuesta de Analitrics.',
       'Tu trabajo es corregir el borrador final si contradice el contexto real disponible.',
       'No inventes datos nuevos.',
@@ -189,12 +166,12 @@ export async function runAnswerReconciliationWorker(params: {
       'Si no hay evidencia suficiente, conserva o mejora la aclaración.',
       'Mantén el español y no menciones herramientas internas.',
     ].join('\n'),
-    [
+    userPrompt: [
       `Pregunta:\n${question}`,
       `Contexto:\n${compactJson(snapshot)}`,
       `Plan:\n${compactJson(plan)}`,
       `Ejecución:\n${compactJson(execution)}`,
       `Borrador actual:\n${answerDraft}`,
     ].join('\n\n'),
-  );
+  });
 }

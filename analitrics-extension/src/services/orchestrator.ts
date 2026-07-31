@@ -22,6 +22,12 @@ import {
 import { buildNodeTrace, logNodeTrace } from './graphObservability.js';
 import { importAttachmentIntoPostgres, runSelectQuery } from './ingestion.js';
 import { findLatestTabularAttachment } from './librechatFiles.js';
+import {
+  finishAgentRun,
+  recordNodeTrace,
+  startAgentRun,
+  withObservabilityContext,
+} from './observability.js';
 import { runContextSelectionWorker, runSourceSelectionWorker } from './workers/contextWorkers.js';
 import { runPlanningWorker, runPlanReconciliationWorker, runRepairPlanningWorker, runSqlSafetyWorker } from './workers/planningWorkers.js';
 import { runIntentWorker, runQuestionCleanupWorker } from './workers/questionWorkers.js';
@@ -178,6 +184,7 @@ async function tracedNode(
     const result = await fn();
     const trace = buildNodeTrace({ node, startedAtMs, status: 'ok', result });
     logNodeTrace(trace);
+    await recordNodeTrace(trace);
     return {
       ...result,
       nodeTraces: [...(state.nodeTraces ?? []), trace],
@@ -185,6 +192,7 @@ async function tracedNode(
   } catch (error) {
     const trace = buildNodeTrace({ node, startedAtMs, status: 'error', error });
     logNodeTrace(trace);
+    await recordNodeTrace(trace);
     throw error;
   }
 }
@@ -437,42 +445,76 @@ export async function orchestrateAnalyticsRequest(
     .addEdge('cleanup_response_node', END)
     .compile();
 
-  const result = await graph.invoke({
+  const runId = await startAgentRun({
+    flowMode: 'graph',
+    userId: baseContext.userId,
+    conversationId: options.conversationId ?? baseContext.conversationId,
     question,
-    baseContext,
-    options,
-    context: null,
-    cleanedQuestion: null,
-    intent: null,
-    sourceSelection: null,
-    plan: null,
-    execution: null,
-    validation: null,
-    answerDraft: '',
-    answer: '',
-    resourceContent: null,
-    repairAttempt: 0,
-    nodeTraces: [],
+    metadata: {
+      filename: options.filename,
+    },
   });
 
-  if (!result.context || !result.cleanedQuestion || !result.intent || !result.sourceSelection || !result.plan || !result.validation) {
-    throw new Error('El grafo de Analitrics terminó sin producir un estado válido completo.');
+  try {
+    const result = await withObservabilityContext({ runId, flowMode: 'graph' }, () =>
+      graph.invoke({
+        question,
+        baseContext,
+        options,
+        context: null,
+        cleanedQuestion: null,
+        intent: null,
+        sourceSelection: null,
+        plan: null,
+        execution: null,
+        validation: null,
+        answerDraft: '',
+        answer: '',
+        resourceContent: null,
+        repairAttempt: 0,
+        nodeTraces: [],
+      }),
+    );
+
+    if (!result.context || !result.cleanedQuestion || !result.intent || !result.sourceSelection || !result.plan || !result.validation) {
+      throw new Error('El grafo de Analitrics terminó sin producir un estado válido completo.');
+    }
+
+    const execution = {
+      ...(result.execution ?? {}),
+      observabilityRunId: runId,
+      graphTrace: result.nodeTraces ?? [],
+    };
+
+    await finishAgentRun({
+      runId,
+      status: 'ok',
+      resultSummary: result.answer,
+      metadata: {
+        responseMode: result.plan.responseMode,
+        dataSource: result.plan.dataSource,
+        sqlRowCount: result.execution?.sqlRowCount ?? null,
+        hasResource: result.resourceContent != null,
+      },
+    });
+
+    return {
+      answer: result.answer,
+      cleanedQuestion: result.cleanedQuestion,
+      context: result.context,
+      intent: result.intent,
+      sourceSelection: result.sourceSelection,
+      plan: result.plan,
+      execution,
+      validation: result.validation,
+      resourceContent: result.resourceContent ?? undefined,
+    };
+  } catch (error) {
+    await finishAgentRun({
+      runId,
+      status: 'error',
+      error,
+    });
+    throw error;
   }
-
-  const execution = {
-    ...(result.execution ?? {}),
-    graphTrace: result.nodeTraces ?? [],
-  };
-
-  return {
-    answer: result.answer,
-    cleanedQuestion: result.cleanedQuestion,
-    context: result.context,
-    intent: result.intent,
-    sourceSelection: result.sourceSelection,
-    plan: result.plan,
-    execution,
-    validation: result.validation,
-    resourceContent: result.resourceContent ?? undefined,
-  };
 }

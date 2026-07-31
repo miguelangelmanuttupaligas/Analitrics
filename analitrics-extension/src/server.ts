@@ -9,6 +9,31 @@ import { describeCurrentContext, listActiveContexts } from './services/ingestion
 import { findLatestTabularAttachment } from './services/librechatFiles.js';
 import { importAttachmentIntoPostgres } from './services/ingestion.js';
 import { syncRecentTabularAttachments } from './services/autoImport.js';
+import { answerWithDirectFileContext } from './services/directFileAnswer.js';
+import { orchestrateAnalyticsRequest } from './services/orchestrator.js';
+
+function getBodyString(body: unknown, key: string): string | undefined {
+  if (!body || typeof body !== 'object') {
+    return undefined;
+  }
+  const value = (body as Record<string, unknown>)[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function summarizeResourceContent(
+  resourceContent:
+    | { resource: { uri: string; mimeType: string; name: string } }
+    | undefined,
+) {
+  if (!resourceContent) {
+    return null;
+  }
+  return {
+    uri: resourceContent.resource.uri,
+    mimeType: resourceContent.resource.mimeType,
+    name: resourceContent.resource.name,
+  };
+}
 
 function getUserContext(req: express.Request): { userId: string; conversationId?: string } {
   const userIdHeader = req.header('x-librechat-user-id') ?? req.header(config.ALLOWED_USER_HEADER);
@@ -77,6 +102,64 @@ async function main(): Promise<void> {
           : context.conversationId,
       );
       res.json({ contexts });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Error interno' });
+    }
+  });
+
+  app.post('/api/quality/direct-file', async (req, res) => {
+    try {
+      const context = getUserContext(req);
+      const pregunta = getBodyString(req.body, 'pregunta');
+      if (!pregunta) {
+        res.status(400).json({ error: 'El campo pregunta es requerido.' });
+        return;
+      }
+      const result = await answerWithDirectFileContext(context, pregunta, {
+        conversationId: getBodyString(req.body, 'conversationId') ?? context.conversationId,
+        filename: getBodyString(req.body, 'filename'),
+      });
+      res.json({
+        flow: 'direct_file',
+        handled: result.handled,
+        reason: result.reason,
+        observabilityRunId: result.observabilityRunId,
+        answer: result.answer,
+        activeFile: result.snapshot?.activeFile,
+        plan: result.plan,
+        execution: result.execution,
+        resource: summarizeResourceContent(result.resourceContent),
+      });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : 'Error interno' });
+    }
+  });
+
+  app.post('/api/quality/graph', async (req, res) => {
+    try {
+      const context = getUserContext(req);
+      const pregunta = getBodyString(req.body, 'pregunta');
+      if (!pregunta) {
+        res.status(400).json({ error: 'El campo pregunta es requerido.' });
+        return;
+      }
+      const result = await orchestrateAnalyticsRequest(context, pregunta, {
+        conversationId: getBodyString(req.body, 'conversationId') ?? context.conversationId,
+        filename: getBodyString(req.body, 'filename'),
+      });
+      res.json({
+        flow: 'graph',
+        observabilityRunId: result.execution.observabilityRunId,
+        answer: result.answer,
+        cleanedQuestion: result.cleanedQuestion,
+        context: result.context,
+        intent: result.intent,
+        sourceSelection: result.sourceSelection,
+        plan: result.plan,
+        execution: result.execution,
+        validation: result.validation,
+        resource: summarizeResourceContent(result.resourceContent),
+      });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : 'Error interno' });
     }

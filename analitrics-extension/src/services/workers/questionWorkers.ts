@@ -3,8 +3,9 @@ import { callJsonWorker } from '../llm.js';
 import { buildWorkerContextBrief, parseCleanedQuestion, parseIntent } from '../workerSupport.js';
 
 export async function runIntentWorker(question: string, snapshot: ContextSnapshot): Promise<AnalyticsIntent> {
-  return callJsonWorker(
-    [
+  return callJsonWorker({
+    workerName: 'intent_worker',
+    systemPrompt: [
       'Eres el worker de intención de Analitrics.',
       'Clasifica la intención del usuario sin responder la pregunta.',
       'Debes decidir formato de salida, necesidad de aclaración y fuente de datos más natural.',
@@ -22,17 +23,18 @@ export async function runIntentWorker(question: string, snapshot: ContextSnapsho
       'No inventes dimensiones ni tablas.',
       'Devuelve solo JSON.',
     ].join('\n'),
-    `Pregunta del usuario:\n${question}\n\nContexto disponible:\n${buildWorkerContextBrief(snapshot)}`,
-    (value) => parseIntent(value, question),
-  );
+    userPrompt: `Pregunta del usuario:\n${question}\n\nContexto disponible:\n${buildWorkerContextBrief(snapshot)}`,
+    parse: (value) => parseIntent(value, question),
+  });
 }
 
 export async function runQuestionCleanupWorker(
   question: string,
   snapshot: ContextSnapshot,
 ): Promise<CleanedQuestion> {
-  return callJsonWorker(
-    [
+  return callJsonWorker({
+    workerName: 'question_cleanup_worker',
+    systemPrompt: [
       'Eres el worker de limpieza de intención de Analitrics.',
       'No respondas la pregunta.',
       'Reescribe la petición en una forma limpia, directa y útil para análisis, preservando exactamente la intención del usuario.',
@@ -50,7 +52,7 @@ export async function runQuestionCleanupWorker(
       'Si el usuario pidió tabla o gráfico, consérvalo en requestedOutput.',
       'Devuelve solo JSON.',
     ].join('\n'),
-    `Pregunta original:\n${question}\n\nContexto disponible:\n${buildWorkerContextBrief(snapshot)}`,
-    (value) => parseCleanedQuestion(value, question),
-  );
+    userPrompt: `Pregunta original:\n${question}\n\nContexto disponible:\n${buildWorkerContextBrief(snapshot)}`,
+    parse: (value) => parseCleanedQuestion(value, question),
+  });
 }

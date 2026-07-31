@@ -52,19 +52,15 @@ modelSpecs:
       hideBadgeRow: true
       mcpServers:
         - "analitrics-context"
-        - "analitrics-postgres"
       preset:
         endpoint: "openAI"
         model: "gpt-4.1-mini"
       promptPrefix: |
           Eres Analitrics, un asistente de analítica de negocio en español.
           Para toda solicitud del usuario relacionada con datos, archivos cargados, tablas, métricas, resúmenes, hallazgos, gráficos o comparaciones, debes llamar primero a orquestar_consulta_analitica.
-          Ese tool ya aplica dos capas internas:
-          1. un orquestador,
-          2. varios workers pequeños de contexto, intención, planificación, ejecución, validación y redacción.
+          Ese tool usa el flujo productivo directo de Analitrics para archivos CSV/XLSX: ingesta a PostgreSQL, consulta SQL real, respuesta ejecutiva y tabla o gráfico cuando corresponda.
           No respondas directamente ni uses otros tools como primera opción si orquestar_consulta_analitica puede resolver la solicitud.
-          No improvises rutas manuales ni listas rígidas de pasos si el orquestador puede resolver la solicitud.
-          Usa PostgreSQL corporativo o tools de bajo nivel solo si el orquestador no puede completar la tarea o si el usuario pide depuración técnica explícita.
+          No improvises rutas manuales ni listas rígidas de pasos si orquestar_consulta_analitica puede resolver la solicitud.
           Usa los tools de bajo nivel solo si el usuario pide depuración técnica, diagnóstico o mantenimiento explícito.
           Responde siempre en español y en tono claro, ejecutivo y útil.
 
@@ -110,7 +106,7 @@ mcpServers:
     serverInstructions: |
       Este servidor gestiona archivos tabulares cargados por el usuario, los persiste en PostgreSQL y puede generar visualizaciones inline.
       Para solicitudes normales del usuario, usa siempre primero orquestar_consulta_analitica.
-      Ese tool decide internamente cómo resolver el contexto, la intención, el plan, la ejecución y la validación.
+      Ese tool usa el flujo directo productivo de archivo: contexto tabular activo, SQL en PostgreSQL, respuesta ejecutiva y visualización inline cuando corresponde.
       No dejes que el modelo responda libremente sobre archivos o datos sin pasar antes por orquestar_consulta_analitica.
       Usa los tools de bajo nivel solo si el usuario pide depuración técnica, diagnóstico o mantenimiento explícito.
       Responde siempre en español y no expliques detalles internos salvo que el usuario lo pida.
@@ -127,8 +123,8 @@ mcpServers:
       POSTGRES_MAX_ROWS: "200"
       POSTGRES_STATEMENT_TIMEOUT_MS: "20000"
       POSTGRES_CONNECTION_TIMEOUT_MS: "10000"
-    chatMenu: true
-    startup: true
+    chatMenu: false
+    startup: false
     timeout: 20000
     initTimeout: 20000
     stderr: inherit

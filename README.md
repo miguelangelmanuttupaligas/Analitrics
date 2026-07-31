@@ -38,3 +38,12 @@ Flujo resumido:
 - El frontend y backend de LibreChat se sirven desde `analitrics-api` en `127.0.0.1:3080`
 - `rag_api` usa `vectordb` y requiere `POSTGRES_DB`, `POSTGRES_USER` y `POSTGRES_PASSWORD` mapeados desde `VECTOR_DB_*`
 - La lógica del producto vive en `analitrics-extension`; los cambios recientes de esta fase fueron de infraestructura y despliegue
+
+## Actualizar cambios
+
+```sh
+cd /opt/librechat/librechat
+docker compose -f docker-compose.prod.yml build analitrics-extension
+docker compose -f docker-compose.prod.yml up -d analitrics-extension
+docker compose -f docker-compose.prod.yml restart api
+```

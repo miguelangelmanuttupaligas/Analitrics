@@ -22,8 +22,9 @@ export async function runPlanningWorker(
   intent: AnalyticsIntent,
   sourceSelection: AnalyticsSourceSelection,
 ): Promise<AnalyticsPlan> {
-  return callJsonWorker(
-    [
+  return callJsonWorker({
+    workerName: 'planning_worker',
+    systemPrompt: [
       'Eres el worker de planificación de Analitrics.',
       'Construye un plan ejecutable para responder la pregunta usando solo la evidencia disponible.',
       'Usa exactamente estos enums:',
@@ -49,15 +50,15 @@ export async function runPlanningWorker(
       'Si no hay tablas corporativas disponibles, no finjas comparación corporativa.',
       'Devuelve solo JSON.',
     ].join('\n'),
-    [
+    userPrompt: [
       `Pregunta limpia:\n${compactJson(cleanedQuestion)}`,
       `Intención:\n${compactJson(intent)}`,
       `Selección de fuente:\n${compactJson(sourceSelection)}`,
       `Guía operativa:\n${buildPlanningGuidance(snapshot, intent, sourceSelection)}`,
       `Contexto:\n${buildWorkerContextBrief(snapshot)}`,
     ].join('\n\n'),
-    (value) => parsePlan(value, cleanedQuestion.cleanedQuestion, snapshot, intent, sourceSelection),
-  );
+    parse: (value) => parsePlan(value, cleanedQuestion.cleanedQuestion, snapshot, intent, sourceSelection),
+  });
 }
 
 export async function runPlanReconciliationWorker(params: {
@@ -68,8 +69,9 @@ export async function runPlanReconciliationWorker(params: {
   proposedPlan: AnalyticsPlan;
 }): Promise<AnalyticsPlan> {
   const { cleanedQuestion, snapshot, intent, sourceSelection, proposedPlan } = params;
-  return callJsonWorker(
-    [
+  return callJsonWorker({
+    workerName: 'plan_reconciliation_worker',
+    systemPrompt: [
       'Eres el worker de reconciliación de plan de Analitrics.',
       'Tu trabajo es revisar un plan propuesto y devolver un plan final más coherente con el contexto disponible.',
       'No respondas la pregunta del usuario.',
@@ -90,7 +92,7 @@ export async function runPlanReconciliationWorker(params: {
       'Si el contexto real no permite contestar, devuelve responseMode=aclaracion con una pregunta concreta.',
       'Devuelve solo JSON con el plan final.',
     ].join('\n'),
-    [
+    userPrompt: [
       `Pregunta limpia:\n${compactJson(cleanedQuestion)}`,
       `Intención:\n${compactJson(intent)}`,
       `Selección de fuente:\n${compactJson(sourceSelection)}`,
@@ -98,8 +100,8 @@ export async function runPlanReconciliationWorker(params: {
       `Contexto:\n${buildWorkerContextBrief(snapshot)}`,
       `Plan propuesto:\n${compactJson(proposedPlan)}`,
     ].join('\n\n'),
-    (value) => parsePlan(value, cleanedQuestion.cleanedQuestion, snapshot, intent, sourceSelection),
-  );
+    parse: (value) => parsePlan(value, cleanedQuestion.cleanedQuestion, snapshot, intent, sourceSelection),
+  });
 }
 
 export async function runSqlSafetyWorker(params: {
@@ -124,8 +126,9 @@ export async function runSqlSafetyWorker(params: {
     };
   }
 
-  return callJsonWorker(
-    [
+  return callJsonWorker({
+    workerName: 'sql_safety_worker',
+    systemPrompt: [
       'Eres el worker de seguridad SQL de Analitrics.',
       'No respondas la pregunta del usuario.',
       'Tu trabajo es revisar el SQL propuesto para asegurar que sea de solo lectura y coherente con el contexto.',
@@ -136,13 +139,13 @@ export async function runSqlSafetyWorker(params: {
       'Si no es seguro o no puede repararse con el contexto, marca shouldClarify=true y formula una aclaración concreta.',
       'Devuelve solo JSON con approved, sanitizedSql, rationale, shouldClarify, clarificationQuestion.',
     ].join('\n'),
-    [
+    userPrompt: [
       `Pregunta:\n${question}`,
       `Contexto:\n${buildWorkerContextBrief(snapshot)}`,
       `Plan:\n${compactJson(plan)}`,
     ].join('\n\n'),
-    (value) => parseSqlSafety(value),
-  );
+    parse: (value) => parseSqlSafety(value),
+  });
 }
 
 export async function runRepairPlanningWorker(params: {
@@ -156,8 +159,9 @@ export async function runRepairPlanningWorker(params: {
   validation: AnalyticsValidation;
 }): Promise<AnalyticsPlan> {
   const { question, cleanedQuestion, snapshot, intent, sourceSelection, previousPlan, execution, validation } = params;
-  return callJsonWorker(
-    [
+  return callJsonWorker({
+    workerName: 'repair_planning_worker',
+    systemPrompt: [
       'Eres el worker de reparación de plan de Analitrics.',
       'Debes corregir un plan previo que produjo problemas detectados por validación.',
       'Mantén exactamente los enums de contrato:',
@@ -170,7 +174,7 @@ export async function runRepairPlanningWorker(params: {
       'No inventes datos.',
       'Devuelve solo JSON.',
     ].join('\n'),
-    [
+    userPrompt: [
       `Pregunta:\n${question}`,
       `Pregunta limpia:\n${compactJson(cleanedQuestion)}`,
       `Contexto:\n${buildWorkerContextBrief(snapshot)}`,
@@ -180,6 +184,6 @@ export async function runRepairPlanningWorker(params: {
       `Ejecución previa:\n${compactJson(execution)}`,
       `Problemas detectados:\n${compactJson(validation)}`,
     ].join('\n\n'),
-    (value) => parsePlan(value, cleanedQuestion.cleanedQuestion, snapshot, intent, sourceSelection),
-  );
+    parse: (value) => parsePlan(value, cleanedQuestion.cleanedQuestion, snapshot, intent, sourceSelection),
+  });
 }

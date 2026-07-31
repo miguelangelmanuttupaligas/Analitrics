@@ -90,6 +90,68 @@ export async function initPostgres(): Promise<void> {
       on analitrics_meta.conversation_file_contexts(user_id, conversation_id, source_file_id)
       where source_file_id is not null;
 
+    create table if not exists analitrics_meta.agent_runs (
+      run_id uuid primary key,
+      flow_mode text not null,
+      user_id text not null,
+      conversation_id text,
+      question text not null,
+      status text not null default 'running',
+      started_at timestamptz not null default now(),
+      completed_at timestamptz,
+      elapsed_ms integer,
+      result_summary text,
+      error text,
+      metadata_json jsonb not null default '{}'::jsonb
+    );
+
+    create index if not exists agent_runs_user_conversation_started_idx
+      on analitrics_meta.agent_runs(user_id, conversation_id, started_at desc);
+    create index if not exists agent_runs_flow_status_started_idx
+      on analitrics_meta.agent_runs(flow_mode, status, started_at desc);
+
+    create table if not exists analitrics_meta.agent_node_traces (
+      id bigserial primary key,
+      run_id uuid references analitrics_meta.agent_runs(run_id) on delete cascade,
+      node_name text not null,
+      status text not null,
+      started_at timestamptz not null,
+      completed_at timestamptz not null,
+      elapsed_ms integer not null,
+      summary text,
+      error text,
+      metadata_json jsonb not null default '{}'::jsonb,
+      created_at timestamptz not null default now()
+    );
+
+    create index if not exists agent_node_traces_run_node_idx
+      on analitrics_meta.agent_node_traces(run_id, node_name, created_at);
+
+    create table if not exists analitrics_meta.agent_llm_calls (
+      id bigserial primary key,
+      run_id uuid references analitrics_meta.agent_runs(run_id) on delete set null,
+      flow_mode text,
+      worker_name text not null,
+      model text not null,
+      json_mode boolean not null,
+      status text not null,
+      elapsed_ms integer not null,
+      prompt_tokens integer,
+      completion_tokens integer,
+      total_tokens integer,
+      input_chars integer not null,
+      output_chars integer,
+      parse_ok boolean,
+      parse_error text,
+      error text,
+      created_at timestamptz not null default now()
+    );
+
+    create index if not exists agent_llm_calls_run_worker_idx
+      on analitrics_meta.agent_llm_calls(run_id, worker_name, created_at);
+    create index if not exists agent_llm_calls_worker_status_idx
+      on analitrics_meta.agent_llm_calls(worker_name, status, created_at desc);
+
     update analitrics_meta.conversation_file_contexts c
     set
       source_file_id = coalesce(c.source_file_id, f.source_file_id),

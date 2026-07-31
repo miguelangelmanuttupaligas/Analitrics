@@ -220,6 +220,7 @@ export type GraphNodeTrace = {
 };
 
 export type AnalyticsExecution = {
+  observabilityRunId?: string;
   importedFile?: string;
   contextDescription?: string;
   sqlRowCount?: number;

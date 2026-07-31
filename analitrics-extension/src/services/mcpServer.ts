@@ -5,7 +5,6 @@ import { describeCurrentContext, getCurrentContext, listActiveContexts, runSelec
 import { findLatestTabularAttachment } from './librechatFiles.js';
 import { importAttachmentIntoPostgres } from './ingestion.js';
 import { answerWithDirectFileContext } from './directFileAnswer.js';
-import { orchestrateAnalyticsRequest } from './orchestrator.js';
 
 type RequestContext = {
   userId: string;
@@ -51,7 +50,7 @@ export function createMcpServer(baseContext: RequestContext): McpServer {
     {
       title: 'Orquestar consulta analítica',
       description:
-        'Tool principal de Analitrics para solicitudes de usuario. Ejecuta dos capas internas: un orquestador y varios workers pequeños de contexto, intención, planificación, ejecución, validación y redacción. Úsalo primero para responder preguntas de negocio, tablas, gráficos, resúmenes o comparaciones.',
+        'Tool principal de Analitrics para solicitudes de usuario sobre archivos CSV/XLSX cargados. Usa el flujo directo productivo: contexto de archivo, SQL en PostgreSQL, respuesta ejecutiva y recurso visual/tabular cuando corresponde.',
       inputSchema: {
         pregunta: z.string().min(1).describe('Pregunta original del usuario.'),
         filename: z.string().optional().describe('Nombre exacto del archivo si se desea sesgar el contexto.'),
@@ -82,65 +81,13 @@ export function createMcpServer(baseContext: RequestContext): McpServer {
         return { content };
       }
 
-      const orchestration = await orchestrateAnalyticsRequest(baseContext, pregunta, {
-        filename,
-        conversationId,
-      });
-
-      const content: Array<
-        | { type: 'text'; text: string }
-        | { type: 'resource'; resource: { uri: string; mimeType: string; text: string; name: string } }
-      > = [
-        {
-          type: 'text',
-          text: orchestration.answer,
-        },
-      ];
-
-      if (orchestration.resourceContent) {
-        content.push(orchestration.resourceContent);
-      }
-
-      return { content };
-    },
-  );
-
-  server.registerTool(
-    'diagnosticar_consulta_analitica',
-    {
-      title: 'Diagnosticar consulta analítica',
-      description:
-        'Tool técnico para developers. Devuelve el estado completo del orquestador y de sus workers para una pregunta, incluyendo contexto detectado, intención, plan y validación.',
-      inputSchema: {
-        pregunta: z.string().min(1),
-        filename: z.string().optional(),
-        conversationId: z.string().optional(),
-      },
-    },
-    async ({ pregunta, filename, conversationId }) => {
-      const orchestration = await orchestrateAnalyticsRequest(baseContext, pregunta, {
-        filename,
-        conversationId,
-      });
-
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify(
-              {
-                cleanedQuestion: orchestration.cleanedQuestion,
-                context: orchestration.context,
-                intent: orchestration.intent,
-                sourceSelection: orchestration.sourceSelection,
-                plan: orchestration.plan,
-                execution: orchestration.execution,
-                validation: orchestration.validation,
-                answer: orchestration.answer,
-              },
-              null,
-              2,
-            ),
+            text:
+              directAnswer.reason ??
+              'No encontré un archivo CSV/XLSX activo para responder esta pregunta. Carga un archivo tabular y vuelve a intentarlo.',
           },
         ],
       };
