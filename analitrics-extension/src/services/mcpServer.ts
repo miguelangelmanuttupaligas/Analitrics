@@ -4,6 +4,7 @@ import { buildChartResource } from './charts.js';
 import { describeCurrentContext, getCurrentContext, listActiveContexts, runSelectQuery } from './ingestion.js';
 import { findLatestTabularAttachment } from './librechatFiles.js';
 import { importAttachmentIntoPostgres } from './ingestion.js';
+import { answerWithDirectFileContext } from './directFileAnswer.js';
 import { orchestrateAnalyticsRequest } from './orchestrator.js';
 
 type RequestContext = {
@@ -58,6 +59,29 @@ export function createMcpServer(baseContext: RequestContext): McpServer {
       },
     },
     async ({ pregunta, filename, conversationId }) => {
+      const directAnswer = await answerWithDirectFileContext(baseContext, pregunta, {
+        filename,
+        conversationId,
+      });
+
+      if (directAnswer.handled) {
+        const content: Array<
+          | { type: 'text'; text: string }
+          | { type: 'resource'; resource: { uri: string; mimeType: string; text: string; name: string } }
+        > = [
+          {
+            type: 'text',
+            text: directAnswer.answer ?? '',
+          },
+        ];
+
+        if (directAnswer.resourceContent) {
+          content.push(directAnswer.resourceContent);
+        }
+
+        return { content };
+      }
+
       const orchestration = await orchestrateAnalyticsRequest(baseContext, pregunta, {
         filename,
         conversationId,

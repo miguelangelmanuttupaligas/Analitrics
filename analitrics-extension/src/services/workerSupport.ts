@@ -384,7 +384,15 @@ export function parseSqlSafety(value: unknown): {
 }
 
 export function parseSourceSelection(value: unknown): AnalyticsSourceSelection {
-  return sourceSelectionSchema.parse(value ?? {});
+  const candidate = (value ?? {}) as Record<string, unknown>;
+  return sourceSelectionSchema.parse({
+    mode: coerceEnum(candidate.mode, ['archivo', 'corporativo', 'combinado', 'ninguno'] as const, 'ninguno'),
+    rationale: typeof candidate.rationale === 'string' ? candidate.rationale : '',
+    needsClarification:
+      typeof candidate.needsClarification === 'boolean' ? candidate.needsClarification : false,
+    clarificationQuestion:
+      typeof candidate.clarificationQuestion === 'string' ? candidate.clarificationQuestion : '',
+  });
 }
 
 function hasAnySelectedAsset(snapshot: ContextSnapshot): boolean {
