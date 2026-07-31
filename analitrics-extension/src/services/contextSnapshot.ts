@@ -3,11 +3,12 @@ import { config } from '../config.js';
 import type {
   ContextAssetSummary,
   ContextAttachmentSummary,
+  ConversationTurnSummary,
   ContextSnapshot,
   ContextTableProfile,
 } from '../types.js';
 import { importAttachmentIntoPostgres, listActiveContexts } from './ingestion.js';
-import { listRecentTabularAttachmentsForUser } from './librechatFiles.js';
+import { listRecentConversationMessages, listRecentTabularAttachmentsForUser } from './librechatFiles.js';
 
 export type RequestContext = {
   userId: string;
@@ -17,6 +18,7 @@ export type RequestContext = {
 export type OrchestrationOptions = {
   filename?: string;
   conversationId?: string;
+  conversationHistory?: ConversationTurnSummary[];
 };
 
 export const CONTEXT_BUDGET = {
@@ -24,6 +26,7 @@ export const CONTEXT_BUDGET = {
   maxTablesPerAsset: config.CONTEXT_MAX_TABLES_PER_ASSET,
   maxColumnsPerTable: config.CONTEXT_MAX_COLUMNS_PER_TABLE,
   maxSampleRowsPerTable: config.CONTEXT_MAX_SAMPLE_ROWS_PER_TABLE,
+  maxRecentMessages: config.CONTEXT_MAX_RECENT_MESSAGES,
 } as const;
 
 function trimTableProfile(table: ContextTableProfile): ContextTableProfile {
@@ -88,7 +91,7 @@ export async function buildContextSnapshot(
   options: OrchestrationOptions = {},
 ): Promise<ContextSnapshot> {
   const conversationId = options.conversationId ?? baseContext.conversationId;
-  const [recentAttachments, corporateTables] = await Promise.all([
+  const [recentAttachments, corporateTables, loadedConversationHistory] = await Promise.all([
     listRecentTabularAttachmentsForUser({
       userId: baseContext.userId,
       conversationId,
@@ -96,7 +99,13 @@ export async function buildContextSnapshot(
       limit: CONTEXT_BUDGET.maxAssets,
     }).catch(() => []),
     loadCorporateTables(),
+    listRecentConversationMessages({
+      userId: baseContext.userId,
+      conversationId,
+      limit: CONTEXT_BUDGET.maxRecentMessages,
+    }).catch(() => []),
   ]);
+  const conversationHistory = options.conversationHistory ?? loadedConversationHistory;
 
   const existingImports = recentAttachments.length
     ? await pg.query<{ source_file_id: string }>(
@@ -179,6 +188,7 @@ export async function buildContextSnapshot(
       mimeType: attachment.mimeType,
       imported: importedFileIds.has(attachment.fileId),
     })),
+    conversationHistory,
     activeFile: {
       available: primaryAsset != null,
       filename: primaryAsset?.filename,
@@ -239,7 +249,7 @@ export function buildSelectedAssetsDescription(snapshot: ContextSnapshot): strin
     return 'No hay activos tabulares seleccionados en contexto.';
   }
 
-  return snapshot.selectedAssets
+  const assetsDescription = snapshot.selectedAssets
     .map((asset, index) => {
       const tableLines = asset.tables.map(
         (table) =>
@@ -256,4 +266,12 @@ export function buildSelectedAssetsDescription(snapshot: ContextSnapshot): strin
       ].join('\n');
     })
     .join('\n\n');
+
+  const recentHistory = snapshot.conversationHistory.length
+    ? snapshot.conversationHistory
+        .map((turn) => `${turn.role}: ${turn.text}`)
+        .join('\n')
+    : 'Sin historial conversacional reciente.';
+
+  return [assetsDescription, `Historial conversacional reciente:\n${recentHistory}`].join('\n\n');
 }

@@ -16,6 +16,7 @@ import {
   startAgentRun,
   withObservabilityContext,
 } from './observability.js';
+import { composePrompt, loadPrompt } from './prompts.js';
 import { compactJson } from './workerSupport.js';
 
 type ResourceContent = {
@@ -140,19 +141,12 @@ function parseDirectPlan(value: unknown, question: string): DirectFilePlan {
 async function buildDirectPlan(question: string, snapshot: ContextSnapshot): Promise<DirectFilePlan> {
   return callJsonWorker({
     workerName: 'direct_file_plan',
-    systemPrompt: [
-      'Eres Analitrics en modo directo de archivo.',
-      'Tu trabajo es decidir cómo responder una pregunta sobre un Excel/CSV ya importado a PostgreSQL.',
-      'No respondas al usuario todavía: devuelve solo un plan JSON.',
-      'Si la pregunta requiere cálculo, ranking, filtro, agregación, tabla o gráfico, genera SQL PostgreSQL SELECT usando solo las tablas y columnas explícitas del contexto.',
-      'Usa nombres de tabla completamente calificados como analitrics_uploads.nombre_tabla.',
-      'Si la pregunta es descriptiva y basta con metadata/resumen del archivo, deja sql vacío y usa responseMode=texto.',
-      'Si el usuario pide gráfico, usa responseMode=grafico.',
-      'Si el usuario pide tabla o ranking, usa responseMode=tabla.',
-      'Si falta información indispensable, usa responseMode=aclaracion con una pregunta corta.',
-      'No inventes tablas, columnas ni datos.',
-      'Devuelve JSON con responseMode, sql, title, chartType, labelColumn, valueColumn, orientation, xField, yField, colorField, topN, clarificationQuestion y rationale.',
-    ].join('\n'),
+    systemPrompt: composePrompt(
+      loadPrompt('shared', 'analitrics_core.md'),
+      loadPrompt('shared', 'data_contract.md'),
+      loadPrompt('shared', 'json_contract.md'),
+      loadPrompt('direct_file', 'plan.md'),
+    ),
     userPrompt: [
       `Pregunta:\n${question}`,
       `Contexto del archivo:\n${buildSelectedAssetsDescription(snapshot)}`,
@@ -173,16 +167,14 @@ async function buildDirectAnswer(params: {
   const { question, snapshot, plan, sqlRows, sqlRowCount, chartSummary, hasResource } = params;
   return callTextWorker({
     workerName: 'direct_file_answer',
-    systemPrompt: [
-      'Eres Analitrics, un asistente de analítica de negocio.',
-      'Responde en español con tono claro y ejecutivo.',
-      'Usa solo el contexto del archivo y los resultados SQL entregados.',
-      'No menciones MCP, workers, SQL interno ni detalles de implementación.',
+    systemPrompt: composePrompt(
+      loadPrompt('shared', 'analitrics_core.md'),
+      loadPrompt('shared', 'answer_style.md'),
+      loadPrompt('direct_file', 'answer.md'),
       hasResource
-        ? 'Si hay tabla o gráfico inline, inicia la respuesta con el marcador \\ui{tabla} o \\ui{grafico} según corresponda.'
+        ? 'Si hay tabla o grafico inline, inicia la respuesta con el marcador \\ui{tabla} o \\ui{grafico} segun corresponda.'
         : 'No incluyas marcadores \\ui{...} si no hay recurso inline.',
-      'Si el resultado contiene valores nulos o marcadores como \\N, explícalos como datos sin informar cuando sea relevante.',
-    ].join('\n'),
+    ),
     userPrompt: [
       `Pregunta:\n${question}`,
       `Contexto del archivo:\n${buildSelectedAssetsDescription(snapshot)}`,

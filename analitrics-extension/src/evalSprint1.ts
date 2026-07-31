@@ -2,6 +2,7 @@ import { closeConnections, initPostgres, pg } from './db.js';
 import { answerWithDirectFileContext } from './services/directFileAnswer.js';
 import { orchestrateAnalyticsRequest } from './services/orchestrator.js';
 import { randomUUID } from 'node:crypto';
+import type { ConversationTurnSummary } from './types.js';
 
 type EvalFlow = 'direct_file' | 'graph';
 
@@ -15,7 +16,9 @@ type EvalCase = {
   expectedMetric?: string;
   expectedDimension?: string;
   mustUseColumns?: string[];
+  mustUseSqlTerms?: string[];
   expectedAnswerTerms?: string[];
+  previousTurns?: ConversationTurnSummary[];
 };
 
 type EvalResult = {
@@ -104,6 +107,29 @@ const evalCases: EvalCase[] = [
     expectsResource: false,
     expectsFileContext: true,
     expectedAnswerTerms: ['corporativo'],
+  },
+  {
+    id: 'incremental_add_amount_to_top_courses',
+    question: 'Agrega además la suma del monto por cada curso',
+    expectedModes: ['tabla', 'grafico'],
+    expectsSql: true,
+    expectsResource: true,
+    expectsFileContext: true,
+    expectedMetric: 'monto',
+    expectedDimension: 'producto',
+    mustUseColumns: ['producto', 'monto'],
+    mustUseSqlTerms: ['count', 'sum'],
+    expectedAnswerTerms: ['monto'],
+    previousTurns: [
+      {
+        role: 'usuario',
+        text: 'Dime los top 5 cursos mas vendidos',
+      },
+      {
+        role: 'asistente',
+        text: 'Se mostro un grafico por curso con ventas_totales calculadas como cantidad de veces que aparece cada curso.',
+      },
+    ],
   },
 ];
 
@@ -218,7 +244,11 @@ async function runCase(flow: EvalFlow, testCase: EvalCase, context: { userId: st
       const result = await answerWithDirectFileContext(
         { userId: context.userId, conversationId: context.conversationId },
         testCase.question,
-        { conversationId: context.conversationId, filename: context.filename },
+        {
+          conversationId: context.conversationId,
+          filename: context.filename,
+          conversationHistory: testCase.previousTurns,
+        },
       );
       const answer = result.answer ?? '';
       const checks = {
@@ -242,6 +272,9 @@ async function runCase(flow: EvalFlow, testCase: EvalCase, context: { userId: st
         mustUseColumns: testCase.mustUseColumns?.length
           ? includesAllTerms(result.plan?.sql, testCase.mustUseColumns)
           : true,
+        mustUseSqlTerms: testCase.mustUseSqlTerms?.length
+          ? includesAllTerms(result.plan?.sql, testCase.mustUseSqlTerms)
+          : true,
         answerTerms: testCase.expectedAnswerTerms?.length
           ? includesAllTerms(answer, testCase.expectedAnswerTerms)
           : true,
@@ -264,7 +297,11 @@ async function runCase(flow: EvalFlow, testCase: EvalCase, context: { userId: st
     const result = await orchestrateAnalyticsRequest(
       { userId: context.userId, conversationId: context.conversationId },
       testCase.question,
-      { conversationId: context.conversationId, filename: context.filename },
+      {
+        conversationId: context.conversationId,
+        filename: context.filename,
+        conversationHistory: testCase.previousTurns,
+      },
     );
     const checks = {
       mode: testCase.expectedModes.includes(result.plan.responseMode),
@@ -286,6 +323,9 @@ async function runCase(flow: EvalFlow, testCase: EvalCase, context: { userId: st
         : true,
       mustUseColumns: testCase.mustUseColumns?.length
         ? includesAllTerms(result.plan.sql, testCase.mustUseColumns)
+        : true,
+      mustUseSqlTerms: testCase.mustUseSqlTerms?.length
+        ? includesAllTerms(result.plan.sql, testCase.mustUseSqlTerms)
         : true,
       answerTerms: testCase.expectedAnswerTerms?.length
         ? includesAllTerms(result.answer, testCase.expectedAnswerTerms)
@@ -370,7 +410,9 @@ async function recordEvalCaseResult(
         expectedMetric: testCase.expectedMetric,
         expectedDimension: testCase.expectedDimension,
         mustUseColumns: testCase.mustUseColumns,
+        mustUseSqlTerms: testCase.mustUseSqlTerms,
         expectedAnswerTerms: testCase.expectedAnswerTerms,
+        previousTurns: testCase.previousTurns,
       }),
       JSON.stringify(result.checks),
       result.answerPreview,

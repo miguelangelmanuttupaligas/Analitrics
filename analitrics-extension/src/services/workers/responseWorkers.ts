@@ -7,6 +7,7 @@ import type {
   ContextSnapshot,
 } from '../../types.js';
 import { callJsonWorker, callTextWorker } from '../llm.js';
+import { composePrompt, loadPrompt } from '../prompts.js';
 import { compactJson, parseValidation } from '../workerSupport.js';
 
 export async function runValidationWorker(params: {
@@ -21,18 +22,11 @@ export async function runValidationWorker(params: {
   const { question, cleanedQuestion, snapshot, intent, plan, execution, draftedAnswer } = params;
   return callJsonWorker({
     workerName: 'validation_worker',
-    systemPrompt: [
-      'Eres el worker de validación de Analitrics.',
-      'Evalúa si la respuesta borrador cumple la intención y si se apoya en la evidencia ejecutada.',
-      'Marca como no aprobado si:',
-      '- la respuesta pierde el contexto del archivo pese a existir,',
-      '- se genera gráfico cuando el usuario pidió tabla,',
-      '- se promete una tabla o gráfico pero no hay ejecución SQL ni recurso visual/tabular asociado,',
-      '- se inventan dimensiones, tablas o conclusiones no sustentadas,',
-      '- se afirma comparación corporativa cuando no hay tablas corporativas disponibles.',
-      '- el plan introdujo un criterio de priorización, agregación o filtro que no aparece en la pregunta limpia y además ambiguityNotes sugiere que faltaba ese criterio.',
-      'Devuelve solo JSON.',
-    ].join('\n'),
+    systemPrompt: composePrompt(
+      loadPrompt('shared', 'analitrics_core.md'),
+      loadPrompt('shared', 'json_contract.md'),
+      loadPrompt('graph', 'validation.md'),
+    ),
     userPrompt: [
       `Pregunta:\n${question}`,
       `Pregunta limpia:\n${compactJson(cleanedQuestion)}`,
@@ -59,15 +53,11 @@ export async function runValidationReconciliationWorker(params: {
   const { question, cleanedQuestion, snapshot, intent, plan, execution, validation, draftedAnswer } = params;
   return callJsonWorker({
     workerName: 'validation_reconciliation_worker',
-    systemPrompt: [
-      'Eres el worker de reconciliación de validación de Analitrics.',
-      'Recibes una validación preliminar y debes ajustarla para que sea coherente con el contexto real.',
-      'No inventes problemas inexistentes.',
-      'Si existe un activo tabular ya disponible, no escales a una aclaración por falta de archivo.',
-      'Si la validación detecta pérdida de contexto, puedes desaprobar y sugerir reparación del plan o de la respuesta.',
-      'Si la pregunta limpia conserva ambigüedad explícita y el plan impuso un criterio no pedido, mantén la desaprobación.',
-      'Devuelve solo JSON.',
-    ].join('\n'),
+    systemPrompt: composePrompt(
+      loadPrompt('shared', 'analitrics_core.md'),
+      loadPrompt('shared', 'json_contract.md'),
+      loadPrompt('graph', 'validation_reconciliation.md'),
+    ),
     userPrompt: [
       `Pregunta:\n${question}`,
       `Pregunta limpia:\n${compactJson(cleanedQuestion)}`,
@@ -94,17 +84,14 @@ export async function runAnswerWorker(params: {
   const { question, cleanedQuestion, snapshot, intent, plan, execution, validationIssues = [] } = params;
   return callTextWorker({
     workerName: 'answer_worker',
-    systemPrompt: [
-      'Eres el worker de redacción de Analitrics.',
-      'Redacta una respuesta final en español, directa y ejecutiva.',
-      'Usa solo la evidencia entregada.',
-      'No menciones workers, planificación, MCP ni detalles internos.',
-      'Si habrá un recurso visual o tabular inline, termina la parte introductoria dejando espacio para que el asistente principal inserte el marcador UI provisto por la herramienta.',
-      'Si faltó contexto, formula una aclaración corta y útil.',
+    systemPrompt: composePrompt(
+      loadPrompt('shared', 'analitrics_core.md'),
+      loadPrompt('shared', 'answer_style.md'),
+      loadPrompt('graph', 'answer.md'),
       validationIssues.length
         ? `Corrige estos problemas detectados: ${validationIssues.join(' | ')}`
         : 'No hay problemas de validación previos.',
-    ].join('\n'),
+    ),
     userPrompt: [
       `Pregunta:\n${question}`,
       `Pregunta limpia:\n${compactJson(cleanedQuestion)}`,
@@ -126,17 +113,11 @@ export async function runResponseCleanupWorker(params: {
   const { originalQuestion, cleanedQuestion, answerDraft, responseMode, hasVisualResource } = params;
   return callTextWorker({
     workerName: 'response_cleanup_worker',
-    systemPrompt: [
-      'Eres el worker de limpieza de respuesta de Analitrics.',
-      'Tu trabajo es mejorar claridad y tono sin cambiar el fondo.',
-      'Reglas:',
-      '- conserva el idioma español;',
-      '- elimina relleno, disculpas innecesarias y repeticiones;',
-      '- mantén un tono ejecutivo y claro;',
-      '- no menciones herramientas internas;',
-      '- si habrá recurso visual o tabla inline, deja intacto cualquier marcador \\ui{...};',
-      '- si la respuesta es una aclaración, que sea corta y específica.',
-    ].join('\n'),
+    systemPrompt: composePrompt(
+      loadPrompt('shared', 'analitrics_core.md'),
+      loadPrompt('shared', 'answer_style.md'),
+      loadPrompt('graph', 'response_cleanup.md'),
+    ),
     userPrompt: [
       `Pregunta original:\n${originalQuestion}`,
       `Pregunta limpia:\n${compactJson(cleanedQuestion)}`,
@@ -157,15 +138,11 @@ export async function runAnswerReconciliationWorker(params: {
   const { question, snapshot, plan, execution, answerDraft } = params;
   return callTextWorker({
     workerName: 'answer_reconciliation_worker',
-    systemPrompt: [
-      'Eres el worker de reconciliación de respuesta de Analitrics.',
-      'Tu trabajo es corregir el borrador final si contradice el contexto real disponible.',
-      'No inventes datos nuevos.',
-      'Si ya existe un archivo activo en contexto, no pidas al usuario volver a cargarlo.',
-      'Si hay evidencia suficiente, transforma aclaraciones innecesarias en una respuesta útil y breve.',
-      'Si no hay evidencia suficiente, conserva o mejora la aclaración.',
-      'Mantén el español y no menciones herramientas internas.',
-    ].join('\n'),
+    systemPrompt: composePrompt(
+      loadPrompt('shared', 'analitrics_core.md'),
+      loadPrompt('shared', 'answer_style.md'),
+      loadPrompt('graph', 'answer_reconciliation.md'),
+    ),
     userPrompt: [
       `Pregunta:\n${question}`,
       `Contexto:\n${compactJson(snapshot)}`,

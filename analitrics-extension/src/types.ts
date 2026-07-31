@@ -15,6 +15,13 @@ export type LibreChatMessage = {
   files?: LibreChatAttachment[];
   text?: string;
   isCreatedByUser?: boolean;
+  sender?: string;
+};
+
+export type ConversationTurnSummary = {
+  role: 'usuario' | 'asistente';
+  text: string;
+  createdAt?: string;
 };
 
 export type DiscoveredAttachment = {
@@ -130,6 +137,7 @@ export type ContextSnapshot = {
     recencyRank: number;
   }>;
   recentAttachments: ContextAttachmentSummary[];
+  conversationHistory: ConversationTurnSummary[];
   activeFile: {
     available: boolean;
     filename?: string;

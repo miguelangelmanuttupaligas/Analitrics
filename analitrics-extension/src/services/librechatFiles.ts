@@ -1,10 +1,15 @@
 import path from 'path';
 import { getMongoDb } from '../db.js';
 import { config, tabularMimeTypes } from '../config.js';
-import type { DiscoveredAttachment, LibreChatMessage } from '../types.js';
+import type { ConversationTurnSummary, DiscoveredAttachment, LibreChatMessage } from '../types.js';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function compactText(value: string | undefined, maxLength = 900): string {
+  const compact = (value ?? '').replace(/\s+/g, ' ').trim();
+  return compact.length > maxLength ? `${compact.slice(0, maxLength - 1)}…` : compact;
 }
 
 export async function listRecentTabularAttachments(limit = 25): Promise<DiscoveredAttachment[]> {
@@ -134,6 +139,45 @@ export async function listRecentTabularAttachmentsForUser(params: {
   }
 
   return attachments;
+}
+
+export async function listRecentConversationMessages(params: {
+  userId: string;
+  conversationId?: string;
+  limit?: number;
+}): Promise<ConversationTurnSummary[]> {
+  if (!params.conversationId) {
+    return [];
+  }
+
+  const db = await getMongoDb();
+  const messages = db.collection<LibreChatMessage>('messages');
+  const docs = await messages
+    .find(
+      {
+        conversationId: params.conversationId,
+        text: { $type: 'string', $ne: '' },
+      },
+      {
+        projection: {
+          createdAt: 1,
+          text: 1,
+          isCreatedByUser: 1,
+        },
+        sort: { createdAt: -1 },
+        limit: Math.max(1, Math.min(params.limit ?? 8, 20)),
+      },
+    )
+    .toArray();
+
+  return docs
+    .reverse()
+    .map((doc): ConversationTurnSummary => ({
+      role: doc.isCreatedByUser ? 'usuario' : 'asistente',
+      text: compactText(doc.text),
+      createdAt: doc.createdAt?.toISOString(),
+    }))
+    .filter((turn) => turn.text.length > 0);
 }
 
 async function findLatestTabularAttachmentOnce(params: {

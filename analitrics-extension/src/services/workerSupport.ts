@@ -143,6 +143,7 @@ export function buildWorkerContextBrief(snapshot: ContextSnapshot): string {
     selectedAssets,
     availableAssets,
     recentAttachments,
+    conversationHistory: snapshot.conversationHistory,
     corporateTables: snapshot.corporateTables.map((table) => `${table.schema}.${table.table}`).slice(0, 25),
   });
 }
@@ -284,6 +285,12 @@ export function parsePlan(
 ): AnalyticsPlan {
   const candidate = (value ?? {}) as Record<string, unknown>;
   const responseMode = normalizeResponseMode(candidate.responseMode);
+  const normalizedTopN =
+    typeof candidate.topN === 'number' && Number.isFinite(candidate.topN) && candidate.topN > 0
+      ? Math.min(Math.trunc(candidate.topN), 50)
+      : responseMode === 'tabla'
+        ? 10
+        : null;
   const inferredDataSource =
     sourceSelection?.mode && sourceSelection.mode !== 'ninguno'
       ? sourceSelection.mode
@@ -321,12 +328,7 @@ export function parsePlan(
     xField: typeof candidate.xField === 'string' ? candidate.xField : '',
     yField: typeof candidate.yField === 'string' ? candidate.yField : '',
     colorField: typeof candidate.colorField === 'string' ? candidate.colorField : '',
-    topN:
-      typeof candidate.topN === 'number' && Number.isFinite(candidate.topN)
-        ? candidate.topN
-        : responseMode === 'tabla'
-          ? 10
-          : null,
+    topN: normalizedTopN,
     clarificationQuestion:
       typeof candidate.clarificationQuestion === 'string' ? candidate.clarificationQuestion : '',
     successCriteria: Array.isArray(candidate.successCriteria)
