@@ -37,10 +37,8 @@ services:
       - ./librechat.yaml:/app/librechat.yaml
     healthcheck:
       test:
-        - CMD
-        - node
-        - -e
-        - fetch('http://127.0.0.1:3080').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))
+        - CMD-SHELL
+        - 'node -e "fetch(\"http://127.0.0.1:3080\").then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"'
       interval: 30s
       timeout: 10s
       retries: 5
@@ -57,11 +55,8 @@ services:
       - librechat_mongodb_data:/data/db
     healthcheck:
       test:
-        - CMD
-        - mongosh
-        - --quiet
-        - --eval
-        - db.adminCommand({ ping: 1 }).ok
+        - CMD-SHELL
+        - 'mongosh --quiet --eval "db.adminCommand({ ping: 1 }).ok"'
       interval: 30s
       timeout: 10s
       retries: 5
@@ -170,10 +165,8 @@ services:
       - librechat_uploads:/data/librechat-uploads:ro
     healthcheck:
       test:
-        - CMD
-        - node
-        - -e
-        - fetch('http://127.0.0.1:3095/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))
+        - CMD-SHELL
+        - 'node -e "fetch(\"http://127.0.0.1:3095/health\").then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"'
       interval: 30s
       timeout: 10s
       retries: 5
