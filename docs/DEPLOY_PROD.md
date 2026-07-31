@@ -1,37 +1,58 @@
 # Despliegue Productivo Analitrics
 
-## 1. Qué publicar
+## 1. Estructura que debes copiar
 
-Carpeta base:
+La instalación productiva usa estas carpetas del repo:
 
-- `/home/miguel/DataAI5/librechat`
+- `./librechat`
+- `./librechat-build-src`
+- `./analitrics-extension`
+- `./docs`
 
-Repos/carpetas requeridas por `docker-compose.prod.yml`:
+El `docker-compose.prod.yml` vive en:
 
-- `../librechat-build-src`
-- `../analitrics-extension`
+- `./librechat/docker-compose.prod.yml`
 
-## 2. Variables mínimas
+## 2. Archivos principales de producción
 
-En `/home/miguel/DataAI5/librechat/.env` debes tener al menos:
+- `.env` o `.env.prod`
+  Ruta repo: `./librechat/.env`
+- `librechat.yaml`
+  Ruta repo: `./librechat/librechat.yaml`
+- `docker-compose.prod.yml`
+  Ruta repo: `./librechat/docker-compose.prod.yml`
+- `nginx-analitrics.conf`
+  Ruta repo: `./docs/nginx-analitrics.conf`
+  Destino VM: `/etc/nginx/sites-available/analitrics`
+
+## 3. Variables mínimas
+
+En `./librechat/.env` debes tener al menos:
 
 ```env
+HOST=0.0.0.0
 PORT=3080
-RAG_PORT=8000
+DOMAIN_CLIENT=https://analitrics.com
+DOMAIN_SERVER=https://analitrics.com
+PUBLIC_IP=167.86.78.111
+PUBLIC_DOMAIN=analitrics.com
+
 OPENAI_API_KEY=tu_clave_real
 RAG_OPENAI_API_KEY=tu_clave_real
+
 JWT_SECRET=64_hex
 JWT_REFRESH_SECRET=64_hex
 CREDS_KEY=64_hex
 CREDS_IV=32_hex
+
+VECTOR_DB_NAME=analitrics_rag
+VECTOR_DB_USER=analitrics_rag
+VECTOR_DB_PASSWORD=cambia_esta_clave
+
 ANALITRICS_POSTGRES_DB=analitrics
 ANALITRICS_POSTGRES_USER=analitrics
 ANALITRICS_POSTGRES_PASSWORD=cambia_esta_clave
 ANALITRICS_POSTGRES_PORT=5436
-
-VECTOR_DB_NAME=analitrics_rag
-VECTOR_DB_USER=analitrics_rag
-VECTOR_DB_PASSWORD=cambia_esta_clave_tambien
 
 WORKER_MODEL=gpt-4.1-mini
 CONTEXT_MAX_ASSETS=4
@@ -40,118 +61,56 @@ CONTEXT_MAX_COLUMNS_PER_TABLE=12
 CONTEXT_MAX_SAMPLE_ROWS_PER_TABLE=3
 ```
 
-## 3. PostgreSQL del stack
+## 4. Cómo usa PostgreSQL el stack
 
-La instalación ahora crea una PostgreSQL propia dentro del stack Docker.
+Hay tres usos distintos:
 
-Hay dos usos distintos de PostgreSQL:
+### A. `analitrics-postgres`
 
-### A. PostgreSQL usada por `analitrics-extension`
+Es la PostgreSQL principal del producto.
+Guarda:
 
-Sirve para:
+- metadata de archivos importados
+- tablas `analitrics_uploads.*`
+- datos corporativos
 
-- guardar metadata de archivos importados;
-- crear tablas `analitrics_uploads.*`;
-- almacenar tus datos corporativos de demo en la misma base.
+### B. MCP PostgreSQL de LibreChat
 
-La conexión ya queda resuelta dentro del stack hacia:
-
-- `analitrics-postgres:5432`
-
-### B. PostgreSQL usada por el MCP visible en LibreChat
-
-Esta conexión no sale desde el navegador.
-La UI no conecta directo a PostgreSQL.
-
-El flujo real es:
+LibreChat no conecta desde el navegador a la base.
+El flujo es:
 
 ```text
 Navegador
   -> LibreChat UI
   -> LibreChat backend
-  -> MCP server configurado en librechat.yaml
-  -> PostgreSQL interna del stack
+  -> MCP PostgreSQL
+  -> analitrics-postgres
 ```
 
-En tu instalación actual, el MCP PostgreSQL está definido en:
+La contraseña definida en `librechat.yaml` debe coincidir con:
 
-- `/home/miguel/DataAI5/librechat/librechat.yaml`
-
-Bloque actual:
-
-```yaml
-  analitrics-postgres:
-    type: stdio
-    title: "Datos corporativos PostgreSQL"
-    command: npx
-    args:
-      - "-y"
-      - "@yawlabs/postgres-mcp@latest"
-    env:
-      DATABASE_URL: "postgresql://analitrics:tu_clave@analitrics-postgres:5432/analitrics"
-```
-
-Eso significa:
-
-- LibreChat levanta un proceso MCP local por `stdio`;
-- ese proceso `@yawlabs/postgres-mcp` abre la conexión a PostgreSQL usando `DATABASE_URL`;
-- el navegador nunca ve esas credenciales.
-
-### C. PostgreSQL usada por `rag_api`
-
-El servicio de RAG de LibreChat no usa `VECTOR_DB_*` por sí solo.
-Necesita además estas variables efectivas dentro del contenedor:
-
-- `POSTGRES_DB`
-- `POSTGRES_USER`
-- `POSTGRES_PASSWORD`
-
-En este proyecto ya quedan mapeadas automáticamente desde:
-
-- `VECTOR_DB_NAME`
-- `VECTOR_DB_USER`
-- `VECTOR_DB_PASSWORD`
-
-## 4. Qué debes editar antes de subir a producción
-
-### Archivo 1
-
-- `/home/miguel/DataAI5/librechat/.env`
-
-Debes poner:
-
-- `OPENAI_API_KEY`
 - `ANALITRICS_POSTGRES_PASSWORD`
 
-### Archivo 2
+### C. `rag_api` + `vectordb`
 
-- `/home/miguel/DataAI5/librechat/librechat.yaml`
+El RAG no usa la PostgreSQL principal.
+Usa su propia base vectorial `vectordb`.
 
-Debes reemplazar la contraseña en el `DATABASE_URL` de `analitrics-postgres` para que coincida con `ANALITRICS_POSTGRES_PASSWORD`.
+Importante:
 
-Ambos, `analitrics-extension` y el MCP PostgreSQL, deben apuntar a la misma base interna para compartir:
+- `vectordb` necesita `VECTOR_DB_*`
+- `rag_api` también necesita explícitamente:
+  - `POSTGRES_DB`
+  - `POSTGRES_USER`
+  - `POSTGRES_PASSWORD`
 
-- metadata de archivos;
-- tablas importadas desde Excel/CSV;
-- datos corporativos.
+Eso ya quedó mapeado dentro de `docker-compose.prod.yml`.
 
-## 4.1 Si luego quieres volver a una PostgreSQL externa
-
-La UI sigue sin conectar directo.
-Solo tendrías que cambiar del lado servidor:
-
-- `POSTGRES_URL` de `analitrics-extension`
-- `DATABASE_URL` del bloque `analitrics-postgres` en `librechat.yaml`
-
-El flujo seguiría siendo:
-
-- navegador -> LibreChat -> MCP/backend -> PostgreSQL externa
-
-## 5. Arranque en la VM
+## 5. Levantar la instalación
 
 Desde:
 
-- `/home/miguel/DataAI5/librechat`
+- `./librechat`
 
 Ejecuta:
 
@@ -162,80 +121,74 @@ docker compose -f docker-compose.prod.yml up -d --build
 Verifica:
 
 ```bash
-docker ps
-docker logs -f analitrics-api
-docker logs -f analitrics-extension
 docker compose -f docker-compose.prod.yml ps
+docker logs --tail 100 analitrics-api
+docker logs --tail 100 analitrics-extension
+docker logs --tail 100 analitrics-rag-api
 ```
 
 Healthchecks esperados:
 
-- `analitrics-mongodb`: healthy
-- `analitrics-vectordb`: healthy
-- `analitrics-rag-api`: healthy
-- `analitrics-postgres`: healthy
-- `analitrics-extension`: healthy
-- `analitrics-api`: healthy
+- `analitrics-mongodb`: `healthy`
+- `analitrics-vectordb`: `healthy`
+- `analitrics-rag-api`: `healthy`
+- `analitrics-postgres`: `healthy`
+- `analitrics-extension`: `healthy`
+- `analitrics-api`: `healthy`
 
-La web quedará sirviendo en:
+La app queda sirviendo en:
 
 - `http://127.0.0.1:3080`
 
-## 6. Reapuntar Nginx
+## 6. Nginx en una VM ya gestionada por Certbot
 
-Usa este template listo para producción:
+Si tu dominio `analitrics.com` ya existe y Certbot ya tocó el sitio, no necesitas rehacer SSL.
+Solo cambias el upstream del sitio `analitrics` para que apunte a:
 
-- [nginx-analitrics.conf](/home/miguel/DataAI5/docs/nginx-analitrics.conf)
+- `http://127.0.0.1:3080`
 
-Destino esperado en la VM:
+Template listo:
+
+- [nginx-analitrics.conf](./nginx-analitrics.conf)
+
+Destino en VM:
 
 - `/etc/nginx/sites-available/analitrics`
 
-Ese archivo ya incluye:
+Ese template sigue el patrón de un sitio ya manejado por Certbot:
 
-- `server_name analitrics.com www.analitrics.com`
+- `server_name analitrics.com`
+- bloque `443 ssl` con certificados existentes
+- bloque `80` con redirección a HTTPS
 - `proxy_pass http://127.0.0.1:3080`
-- redirección HTTP -> HTTPS
-- redirección `www` -> dominio raíz
-- paths estándar de certificados de Certbot:
-  - `/etc/letsencrypt/live/analitrics.com/fullchain.pem`
-  - `/etc/letsencrypt/live/analitrics.com/privkey.pem`
-- `location /.well-known/acme-challenge/` para validación ACME
-- soporte para WebSocket
+- soporte WebSocket
 - `client_max_body_size 100M`
 
-Luego:
+Aplicación:
 
 ```bash
-sudo mkdir -p /var/www/certbot
-sudo cp /opt/librechat/docs/nginx-analitrics.conf /etc/nginx/sites-available/analitrics
-sudo ln -sf /etc/nginx/sites-available/analitrics /etc/nginx/sites-enabled/analitrics
+sudo cp ./docs/nginx-analitrics.conf /etc/nginx/sites-available/analitrics
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-## 7. Si usas HTTPS con certbot
+## 7. Si necesitas reemitir o reparar el certificado
 
-Una vez que `analitrics.com` y `www.analitrics.com` resuelvan a `167.86.78.111`:
+Solo si el certificado ya no existiera o estuviera roto:
 
 ```bash
-sudo certbot certonly --webroot -w /var/www/certbot -d analitrics.com -d www.analitrics.com
+sudo certbot --nginx -d analitrics.com
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-El template ya apunta a los paths que Certbot deja por defecto:
+## 8. Puertos expuestos
 
-- `/etc/letsencrypt/live/analitrics.com/fullchain.pem`
-- `/etc/letsencrypt/live/analitrics.com/privkey.pem`
+Solo debe quedar expuesto públicamente:
 
-## 8. Qué puerto debe ver Nginx
+- `3080/tcp` a través de Nginx
 
-Solo necesitas publicar:
-
-- `3080/tcp`
-
-No hace falta exponer públicamente:
+No expongas públicamente:
 
 - MongoDB
 - VectorDB
@@ -243,20 +196,9 @@ No hace falta exponer públicamente:
 - `analitrics-extension:3095`
 - `analitrics-postgres:5432`
 
-Todo eso debe quedar interno en Docker.
+## 9. Volúmenes persistentes definitivos
 
-## 9. Operación esperada
-
-Características del compose productivo:
-
-- nombres finales de contenedores con prefijo `analitrics-`
-- `restart: unless-stopped` en todos los servicios
-- `healthchecks` en API, MongoDB, PostgreSQL, VectorDB, RAG API y extensión
-- dependencias por salud para evitar arranques a medias
-- volúmenes Docker nativos y persistentes con nombre fijo para evitar problemas de permisos del host
-- solo `3080/tcp` expuesto públicamente
-
-Volúmenes persistentes definitivos creados por el stack:
+El stack productivo usa nombres fijos:
 
 - `analitrics_mongodb_data`
 - `analitrics_uploads_data`
@@ -266,12 +208,23 @@ Volúmenes persistentes definitivos creados por el stack:
 
 Esos son los volúmenes que debes respaldar si luego quieres migrar la instalación o conservar estado.
 
-## 10. Resumen práctico
+## 10. Reset limpio de la instalación
 
-1. Edita `.env`
-2. Edita `librechat.yaml`
-3. Levanta con `docker compose -f docker-compose.prod.yml up -d --build`
-4. Espera a que todos los contenedores queden `healthy`
-5. Haz que Nginx apunte a `127.0.0.1:3080`
+Si necesitas reconstruir completamente solo este stack:
+
+```bash
+cd ./librechat
+docker compose -f docker-compose.prod.yml down --remove-orphans
+docker volume rm analitrics_mongodb_data analitrics_uploads_data analitrics_logs_data analitrics_rag_pgdata analitrics_postgres_data
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+## 11. Resumen corto
+
+1. Copia el repo al directorio destino de tu VM
+2. Completa `.env` o usa `.env.prod` como base
+3. Revisa `librechat.yaml` para que el `DATABASE_URL` del MCP use la misma clave de `ANALITRICS_POSTGRES_PASSWORD`
+4. Levanta `docker compose -f docker-compose.prod.yml up -d --build`
+5. Reemplaza `/etc/nginx/sites-available/analitrics` con el template del repo
 6. Recarga Nginx
-7. Prueba el dominio
+7. Verifica que todos los contenedores estén `healthy`
