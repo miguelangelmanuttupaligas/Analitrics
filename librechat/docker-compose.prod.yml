@@ -96,6 +96,10 @@ services:
       - .env
     environment:
       - DB_HOST=vectordb
+      - DB_PORT=5432
+      - POSTGRES_DB=${VECTOR_DB_NAME:-analitrics_rag}
+      - POSTGRES_USER=${VECTOR_DB_USER:-analitrics_rag}
+      - POSTGRES_PASSWORD=${VECTOR_DB_PASSWORD:-analitrics_rag_local_2026}
       - RAG_PORT=${RAG_PORT:-8000}
     volumes:
       - librechat_uploads:/app/uploads

@@ -97,6 +97,21 @@ Eso significa:
 - ese proceso `@yawlabs/postgres-mcp` abre la conexión a PostgreSQL usando `DATABASE_URL`;
 - el navegador nunca ve esas credenciales.
 
+### C. PostgreSQL usada por `rag_api`
+
+El servicio de RAG de LibreChat no usa `VECTOR_DB_*` por sí solo.
+Necesita además estas variables efectivas dentro del contenedor:
+
+- `POSTGRES_DB`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
+
+En este proyecto ya quedan mapeadas automáticamente desde:
+
+- `VECTOR_DB_NAME`
+- `VECTOR_DB_USER`
+- `VECTOR_DB_PASSWORD`
+
 ## 4. Qué debes editar antes de subir a producción
 
 ### Archivo 1

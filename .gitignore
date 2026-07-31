@@ -5,6 +5,7 @@
 
 # Local env secrets
 librechat/.env
+librechat/.env.prod
 
 # Runtime data
 librechat/uploads/
