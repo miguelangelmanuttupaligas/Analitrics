@@ -69,9 +69,9 @@ services:
     init: true
     stop_grace_period: 30s
     environment:
-      POSTGRES_DB: ${VECTOR_DB_NAME:-mydatabase}
-      POSTGRES_USER: ${VECTOR_DB_USER:-myuser}
-      POSTGRES_PASSWORD: ${VECTOR_DB_PASSWORD:-mypassword}
+      POSTGRES_DB: ${VECTOR_DB_NAME:-analitrics_rag}
+      POSTGRES_USER: ${VECTOR_DB_USER:-analitrics_rag}
+      POSTGRES_PASSWORD: ${VECTOR_DB_PASSWORD:-analitrics_rag_local_2026}
     volumes:
       - librechat_pgdata:/var/lib/postgresql/data
     healthcheck:

@@ -43,9 +43,9 @@ services:
     image: pgvector/pgvector:0.8.0-pg15-trixie
     restart: always
     environment:
-      POSTGRES_DB: mydatabase
-      POSTGRES_USER: myuser
-      POSTGRES_PASSWORD: mypassword
+      POSTGRES_DB: analitrics_rag
+      POSTGRES_USER: analitrics_rag
+      POSTGRES_PASSWORD: analitrics_rag_local_2026
     volumes:
       - librechat_pgdata:/var/lib/postgresql/data
 
