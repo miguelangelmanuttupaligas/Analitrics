@@ -241,14 +241,34 @@ export function buildSelectedAssetsDescription(snapshot: ContextSnapshot): strin
     return 'No hay activos tabulares seleccionados en contexto.';
   }
 
+  const formatSampleValues = (values: Array<string | number | boolean | null>): string => {
+    const compact = values
+      .filter((value) => value !== null && value !== '')
+      .slice(0, 4)
+      .map((value) => JSON.stringify(value))
+      .join(', ');
+    return compact || 'sin muestras';
+  };
+
   const assetsDescription = snapshot.selectedAssets
     .map((asset, index) => {
-      const tableLines = asset.tables.map(
-        (table) =>
-          `- Hoja ${table.sheetName} -> analitrics_uploads.${table.tableName} (${table.rowCount} filas, ${table.columnCount} columnas: ${table.columns
-            .map((column) => column.columnName)
-            .join(', ')})`,
-      );
+      const tableLines = asset.tables.map((table) => {
+        const columnLines = table.columns.map((column) =>
+          [
+            `  - ${column.columnName}`,
+            `(origen: ${column.sourceName}`,
+            `tipo: ${column.pgType}`,
+            `nulos: ${column.nullCount}`,
+            `samples: ${formatSampleValues(column.sampleValues)})`,
+          ].join(' '),
+        );
+        return [
+          `- Hoja ${table.sheetName} -> analitrics_uploads.${table.tableName}`,
+          `  Filas: ${table.rowCount}; columnas: ${table.columnCount}.`,
+          '  Columnas perfiladas:',
+          ...columnLines,
+        ].join('\n');
+      });
       return [
         `Activo ${index + 1}: ${asset.filename}`,
         `Resumen técnico: ${asset.summary}`,

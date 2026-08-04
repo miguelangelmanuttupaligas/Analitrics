@@ -97,9 +97,11 @@ mcpServers:
     consumeOnly: true
     url: "http://analitrics-extension:3095/mcp"
     timeout: 30000
+    tools: "orquestar_consulta_analitica"
     headers:
       X-LibreChat-User-Id: "{{LIBRECHAT_USER_ID}}"
       X-LibreChat-User-Name: "{{LIBRECHAT_USER_NAME}}"
+      X-LibreChat-Conversation-Id: "{{LIBRECHAT_BODY_CONVERSATIONID}}"
     chatMenu: false
     startup: true
     iconURL: ""

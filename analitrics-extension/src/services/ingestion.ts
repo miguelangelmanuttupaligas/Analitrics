@@ -17,7 +17,7 @@ import {
   uniqueColumnNames,
 } from '../utils.js';
 
-async function activateExclusiveConversationContext(params: {
+async function activateConversationContext(params: {
   userId: string;
   conversationId: string;
   uploadId: string;
@@ -26,17 +26,6 @@ async function activateExclusiveConversationContext(params: {
   filename?: string;
   mimeType?: string;
 }): Promise<void> {
-  await pg.query(
-    `
-      update analitrics_meta.conversation_file_contexts
-      set is_active = false
-      where user_id = $1
-        and conversation_id = $2
-        and upload_id <> $3
-    `,
-    [params.userId, params.conversationId, params.uploadId],
-  );
-
   await pg.query(
     `
       insert into analitrics_meta.conversation_file_contexts(
@@ -259,7 +248,7 @@ export async function importAttachmentIntoPostgres(attachment: DiscoveredAttachm
 
   if (existing.rowCount) {
     const uploadId = existing.rows[0].upload_id;
-    await activateExclusiveConversationContext({
+    await activateConversationContext({
       userId: attachment.userId,
       conversationId: attachment.conversationId,
       uploadId,
@@ -358,7 +347,7 @@ export async function importAttachmentIntoPostgres(attachment: DiscoveredAttachm
       );
     }
 
-    await activateExclusiveConversationContext({
+    await activateConversationContext({
       userId: attachment.userId,
       conversationId: attachment.conversationId,
       uploadId,
@@ -374,7 +363,7 @@ export async function importAttachmentIntoPostgres(attachment: DiscoveredAttachm
       error instanceof Error &&
       /duplicate key value violates unique constraint "uploaded_files_pkey"/i.test(error.message)
     ) {
-      await activateExclusiveConversationContext({
+      await activateConversationContext({
         userId: attachment.userId,
         conversationId: attachment.conversationId,
         uploadId,
@@ -468,32 +457,44 @@ export async function listActiveContexts(userId: string, conversationId?: string
   }
 
   const query = `
-    select distinct on (f.upload_id) f.upload_id
-    from analitrics_meta.uploaded_files f
-    left join analitrics_meta.conversation_file_contexts c
-      on c.upload_id = f.upload_id
-     and c.user_id = $1
-    where f.user_id = $1
-      and (
-        $2::text is null
-        or (
-          c.conversation_id = $2
-          and c.is_active = true
-        )
-        or (
-          not exists (
-            select 1
-            from analitrics_meta.conversation_file_contexts cx
-            where cx.upload_id = f.upload_id
-              and cx.user_id = $1
+    with candidates as (
+      select distinct on (f.upload_id)
+        f.upload_id,
+        coalesce(c.updated_at, c.created_at, f.updated_at, f.created_at) as context_updated_at,
+        f.created_at
+      from analitrics_meta.uploaded_files f
+      left join analitrics_meta.conversation_file_contexts c
+        on c.upload_id = f.upload_id
+       and c.user_id = $1
+      where f.user_id = $1
+        and (
+          $2::text is null
+          or (
+            c.conversation_id = $2
+            and c.is_active = true
           )
-          and f.conversation_id = $2
+          or (
+            not exists (
+              select 1
+              from analitrics_meta.conversation_file_contexts cx
+              where cx.upload_id = f.upload_id
+                and cx.user_id = $1
+            )
+            and f.conversation_id = $2
+          )
         )
-      )
-    order by f.upload_id, c.updated_at desc nulls last, c.created_at desc nulls last, f.created_at desc
-    limit 1
+      order by f.upload_id, c.updated_at desc nulls last, c.created_at desc nulls last, f.created_at desc
+    )
+    select upload_id
+    from candidates
+    order by context_updated_at desc, created_at desc
+    limit $3
   `;
-  const result = await pg.query<{ upload_id: string }>(query, [userId, conversationId ?? null]);
+  const result = await pg.query<{ upload_id: string }>(query, [
+    userId,
+    conversationId ?? null,
+    config.CONTEXT_MAX_ASSETS,
+  ]);
   return Promise.all(
     result.rows.map((row: { upload_id: string }) => getImportedContext(row.upload_id, conversationId)),
   );

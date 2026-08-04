@@ -11,6 +11,7 @@ import {
 import { findLatestTabularAttachment, findRecentUserMessageForQuestion } from './librechatFiles.js';
 import { importAttachmentIntoPostgres } from './ingestion.js';
 import { answerWithDirectFileContext } from './directFileAnswer.js';
+import { config } from '../config.js';
 
 type RequestContext = {
   userId: string;
@@ -19,6 +20,38 @@ type RequestContext = {
 
 function formatRows(rows: Record<string, unknown>[]): string {
   return JSON.stringify(rows, null, 2);
+}
+
+function buildToolTraceText(params: {
+  runId?: string;
+  selectedAssets?: string[];
+  sql?: string;
+  responseMode?: string;
+  sqlRowCount?: number;
+}): string {
+  const selectedAssets = params.selectedAssets ?? [];
+  const sql = params.sql?.trim();
+  return [
+    '',
+    '---',
+    '',
+    '<details>',
+    '<summary>Trazabilidad Analitrics</summary>',
+    '',
+    `agent_run: ${params.runId ?? 'N/D'}`,
+    `modo: ${params.responseMode ?? 'N/D'}`,
+    `filas_sql: ${params.sqlRowCount ?? 0}`,
+    '',
+    'selectedAssets:',
+    ...(selectedAssets.length ? selectedAssets.map((asset) => `- ${asset}`) : ['- N/D']),
+    '',
+    'plan.sql:',
+    '```sql',
+    sql || '-- Sin SQL: la respuesta se resolvió con metadata o resumen del contexto.',
+    '```',
+    '',
+    '</details>',
+  ].join('\n');
 }
 
 type ResolvedAnalyticContext =
@@ -68,12 +101,15 @@ async function resolveAnalyticContext(params: {
 
   if (recentMessage && recentMessage.attachments.length === 0) {
     const contexts = await listActiveContexts(params.baseContext.userId, recentMessage.conversationId);
-    if (contexts.length === 1) {
+    if (contexts.length >= 1) {
       return {
         ok: true,
         conversationId: recentMessage.conversationId,
-        filename: contexts[0].filename,
-        reason: 'mensaje_reciente_sin_adjunto_con_contexto_activo',
+        filename: contexts.length === 1 ? contexts[0].filename : undefined,
+        reason:
+          contexts.length === 1
+            ? 'mensaje_reciente_sin_adjunto_con_contexto_activo'
+            : 'mensaje_reciente_sin_adjunto_con_multiples_contextos_activos',
       };
     }
   }
@@ -213,13 +249,23 @@ export function createMcpServer(baseContext: RequestContext): McpServer {
       });
 
       if (directAnswer.handled) {
+        const answerWithTrace = [
+          directAnswer.answer ?? '',
+          buildToolTraceText({
+            runId: directAnswer.observabilityRunId,
+            selectedAssets: directAnswer.snapshot?.selectedAssets.map((asset) => asset.filename),
+            sql: directAnswer.plan?.sql,
+            responseMode: directAnswer.plan?.responseMode,
+            sqlRowCount: directAnswer.execution?.sqlRowCount,
+          }),
+        ].join('\n');
         const content: Array<
           | { type: 'text'; text: string }
           | { type: 'resource'; resource: { uri: string; mimeType: string; text: string; name: string } }
         > = [
           {
             type: 'text',
-            text: directAnswer.answer ?? '',
+            text: answerWithTrace,
           },
         ];
 
@@ -242,6 +288,10 @@ export function createMcpServer(baseContext: RequestContext): McpServer {
       };
     },
   );
+
+  if (!config.EXPOSE_TECHNICAL_MCP_TOOLS) {
+    return server;
+  }
 
   server.registerTool(
     'importar_archivo_actual',

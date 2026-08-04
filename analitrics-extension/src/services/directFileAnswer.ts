@@ -1,7 +1,9 @@
 import { z } from 'zod';
+import { parse } from 'pgsql-ast-parser';
 import type { ContextSnapshot } from '../types.js';
 import { buildChartResource } from './charts.js';
 import {
+  applyContextSelection,
   buildContextSnapshot,
   buildSelectedAssetsDescription,
   type OrchestrationOptions,
@@ -18,6 +20,7 @@ import {
 } from './observability.js';
 import { composePrompt, loadPrompt } from './prompts.js';
 import { compactJson } from './workerSupport.js';
+import { runContextSelectionWorker } from './workers/contextWorkers.js';
 
 type ResourceContent = {
   type: 'resource';
@@ -84,6 +87,14 @@ function normalizeSqlIdentifier(value: string): string {
   return value.replace(/^"|"$/g, '').toLowerCase();
 }
 
+function normalizeQualifiedName(value: string): string {
+  return value
+    .replace(/^"|"$/g, '')
+    .split('.')
+    .map((part) => normalizeSqlIdentifier(part))
+    .join('.');
+}
+
 function getActiveTableNames(snapshot: ContextSnapshot): Set<string> {
   return new Set(
     snapshot.selectedAssets.flatMap((asset) =>
@@ -107,14 +118,84 @@ function qualifyKnownDirectTables(sql: string, snapshot: ContextSnapshot): strin
   return qualifiedSql;
 }
 
+function collectCteAliases(ast: unknown): Set<string> {
+  const aliases = new Set<string>();
+
+  function visit(value: unknown): void {
+    if (!value || typeof value !== 'object') {
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+
+    const record = value as Record<string, unknown>;
+    if (record.type === 'with' && Array.isArray(record.bind)) {
+      for (const binding of record.bind) {
+        if (!binding || typeof binding !== 'object') {
+          continue;
+        }
+        const alias = (binding as { alias?: { name?: unknown } }).alias?.name;
+        if (typeof alias === 'string') {
+          aliases.add(normalizeSqlIdentifier(alias));
+        }
+      }
+    }
+
+    Object.values(record).forEach(visit);
+  }
+
+  visit(ast);
+  return aliases;
+}
+
+function collectTableReferences(ast: unknown): string[] {
+  const references: string[] = [];
+
+  function visit(value: unknown): void {
+    if (!value || typeof value !== 'object') {
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+
+    const record = value as Record<string, unknown>;
+    if (record.type === 'table' && record.name && typeof record.name === 'object') {
+      const name = record.name as { schema?: unknown; name?: unknown };
+      if (typeof name.name === 'string') {
+        const table = normalizeSqlIdentifier(name.name);
+        const schema = typeof name.schema === 'string' ? normalizeSqlIdentifier(name.schema) : '';
+        references.push(schema ? `${schema}.${table}` : table);
+      }
+    }
+
+    Object.values(record).forEach(visit);
+  }
+
+  visit(ast);
+  return references;
+}
+
 function assertDirectSqlUsesOnlySnapshotTables(sql: string, snapshot: ContextSnapshot): void {
   const allowedTables = getActiveTableNames(snapshot);
-  for (const match of sql.matchAll(/\b(?:with|,)\s+("?[a-z_][\w]*"?)\s+as\s*\(/gi)) {
-    allowedTables.add(normalizeSqlIdentifier(match[1]));
+  let statements: unknown[];
+  try {
+    statements = parse(sql);
+  } catch (error) {
+    throw new Error(
+      `No se pudo parsear el SQL directo para validarlo: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
-  const references = Array.from(
-    sql.matchAll(/\b(?:from|join)\s+((?:"?[a-z_][\w]*"?\.)?"?[a-z_][\w]*"?)/gi),
-  ).map((match) => normalizeSqlIdentifier(match[1]));
+
+  const cteAliases = collectCteAliases(statements);
+  for (const alias of cteAliases) {
+    allowedTables.add(alias);
+  }
+
+  const references = collectTableReferences(statements).map(normalizeQualifiedName);
 
   if (!references.length) {
     return;
@@ -254,7 +335,11 @@ async function buildDirectAnswer(params: {
       loadPrompt('shared', 'answer_style.md'),
       loadPrompt('direct_file', 'answer.md'),
       hasResource
-        ? 'Si hay tabla o grafico inline, inicia la respuesta con el marcador \\ui{tabla} o \\ui{grafico} segun corresponda.'
+        ? [
+            'Si hay tabla o grafico inline, inicia la respuesta con el marcador \\ui{tabla} o \\ui{grafico} segun corresponda.',
+            'El recurso inline ya renderiza las filas SQL devueltas: no las dupliques como tabla markdown ni como listado fila por fila.',
+            'Despues del marcador, entrega solo una sintesis breve o insight ejecutivo basado en el recurso.',
+          ].join('\n')
         : 'No incluyas marcadores \\ui{...} si no hay recurso inline.',
     ),
     userPrompt: [
@@ -273,7 +358,7 @@ export async function answerWithDirectFileContext(
   options: OrchestrationOptions = {},
 ): Promise<DirectFileAnswer> {
   const contextStartedAtMs = Date.now();
-  const snapshot = await buildContextSnapshot(baseContext, options);
+  let snapshot = await buildContextSnapshot(baseContext, options);
   if (!snapshot.selectedAssets.length) {
     return {
       handled: false,
@@ -307,6 +392,20 @@ export async function answerWithDirectFileContext(
     );
 
     try {
+      if (snapshot.selectedAssets.length > 1) {
+        const contextSelection = await tracedDirectValue(
+          'direct_context_selection_node',
+          () => runContextSelectionWorker(question, snapshot),
+          (value) => ({
+            selectedUploadIds: value.selectedUploadIds,
+            rationale: value.rationale,
+          }),
+        );
+        if (contextSelection.selectedUploadIds.length > 0) {
+          snapshot = applyContextSelection(snapshot, contextSelection);
+        }
+      }
+
       let plan = await tracedDirectValue('direct_plan_node', () => buildDirectPlan(question, snapshot), (value) => ({
         plan: value,
       }));
@@ -402,6 +501,8 @@ export async function answerWithDirectFileContext(
           resultSummary: answer,
           metadata: {
             responseMode: plan.responseMode,
+            selectedAssets: snapshot.selectedAssets.map((asset) => asset.filename),
+            sql: plan.sql,
             sqlRowCount: execution.sqlRowCount,
             hasResource: false,
           },
@@ -437,6 +538,8 @@ export async function answerWithDirectFileContext(
         resultSummary: answer,
         metadata: {
           responseMode: plan.responseMode,
+          selectedAssets: snapshot.selectedAssets.map((asset) => asset.filename),
+          sql: plan.sql,
           sqlRowCount: execution.sqlRowCount,
           hasResource: resourceContent != null,
         },
