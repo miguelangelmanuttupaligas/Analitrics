@@ -220,19 +220,11 @@ export function applyContextSelection(
         asset.matchedBy.length > 0 ? asset.matchedBy : [selection.rationale || 'seleccion_worker'],
     }));
 
-  const fallbackAssets =
-    selectedAssets.length > 0
-      ? selectedAssets
-      : snapshot.selectedAssets.slice(0, snapshot.budget.maxAssets).map((asset) => ({
-          ...asset,
-          matchedBy: asset.matchedBy.length > 0 ? asset.matchedBy : ['fallback_reciente'],
-        }));
-
-  const primaryAsset = fallbackAssets[0] ?? null;
+  const primaryAsset = selectedAssets[0] ?? null;
 
   return {
     ...snapshot,
-    selectedAssets: fallbackAssets,
+    selectedAssets,
     activeFile: {
       available: primaryAsset != null,
       filename: primaryAsset?.filename,

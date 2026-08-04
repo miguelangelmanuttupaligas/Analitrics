@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import { parse as parseCsv } from 'csv-parse/sync';
 import XLSX from 'xlsx';
 import { pg } from '../db.js';
+import { config } from '../config.js';
 import type { DiscoveredAttachment, ImportedContext, InferredColumn, ParsedSheet } from '../types.js';
 import {
   assertSelectOnly,
@@ -227,8 +228,20 @@ async function persistSheetTable(uploadId: string, sheet: ParsedSheet, sheetInde
 }
 
 export async function importAttachmentIntoPostgres(attachment: DiscoveredAttachment): Promise<ImportedContext> {
+  if (attachment.bytes > config.MAX_TABULAR_UPLOAD_BYTES) {
+    throw new Error(
+      `El archivo ${attachment.filename} supera el límite de ${Math.floor(config.MAX_TABULAR_UPLOAD_BYTES / 1024 / 1024)} MB.`,
+    );
+  }
+
   const fileBuffer = await fs.readFile(attachment.absolutePath);
+  if (fileBuffer.byteLength > config.MAX_TABULAR_UPLOAD_BYTES) {
+    throw new Error(
+      `El archivo ${attachment.filename} supera el límite de ${Math.floor(config.MAX_TABULAR_UPLOAD_BYTES / 1024 / 1024)} MB.`,
+    );
+  }
   const fileHash = sha256(fileBuffer);
+  const uploadId = toUuidLikeHash(sha256(Buffer.from(`${attachment.userId}:${fileHash}`, 'utf-8')));
   const existing = await pg.query<{
     upload_id: string;
     semantic_summary: string | null;
@@ -237,10 +250,11 @@ export async function importAttachmentIntoPostgres(attachment: DiscoveredAttachm
     `
       select upload_id, semantic_summary, business_summary
       from analitrics_meta.uploaded_files
-      where user_id = $1 and file_hash = $2
+      where upload_id = $2
+         or (user_id = $1 and file_hash = $3)
       limit 1
     `,
-    [attachment.userId, fileHash],
+    [attachment.userId, uploadId, fileHash],
   );
 
   if (existing.rowCount) {
@@ -262,7 +276,6 @@ export async function importAttachmentIntoPostgres(attachment: DiscoveredAttachm
       ? parseCsvBuffer(fileBuffer)
       : parseWorkbookBuffer(fileBuffer);
 
-  const uploadId = toUuidLikeHash(sha256(Buffer.from(`${attachment.userId}:${fileHash}`, 'utf-8')));
   const semanticSummary = buildSemanticSummary(attachment.filename, sheets);
   const businessSummary = buildBusinessSummary(attachment.filename, sheets);
   const profileJson = {
@@ -292,6 +305,19 @@ export async function importAttachmentIntoPostgres(attachment: DiscoveredAttachm
           $1, $2, $3, $4, $5, $6, $7,
           $8, $9, $10, $11, $12, $13::jsonb
         )
+        on conflict (upload_id) do update set
+          conversation_id = excluded.conversation_id,
+          source_file_id = excluded.source_file_id,
+          source_message_id = excluded.source_message_id,
+          filename = excluded.filename,
+          mime_type = excluded.mime_type,
+          file_size_bytes = excluded.file_size_bytes,
+          workbook_sheet_count = excluded.workbook_sheet_count,
+          semantic_summary = excluded.semantic_summary,
+          business_summary = excluded.business_summary,
+          profile_json = excluded.profile_json,
+          import_status = 'ready',
+          updated_at = now()
       `,
       [
         uploadId,
@@ -309,6 +335,8 @@ export async function importAttachmentIntoPostgres(attachment: DiscoveredAttachm
         JSON.stringify(profileJson),
       ],
     );
+
+    await pg.query('delete from analitrics_meta.uploaded_file_tables where upload_id = $1', [uploadId]);
 
     for (const [index, sheet] of sheets.entries()) {
       const tableName = await persistSheetTable(uploadId, sheet, index);
@@ -342,6 +370,21 @@ export async function importAttachmentIntoPostgres(attachment: DiscoveredAttachm
     await pg.query('commit');
   } catch (error) {
     await pg.query('rollback');
+    if (
+      error instanceof Error &&
+      /duplicate key value violates unique constraint "uploaded_files_pkey"/i.test(error.message)
+    ) {
+      await activateExclusiveConversationContext({
+        userId: attachment.userId,
+        conversationId: attachment.conversationId,
+        uploadId,
+        sourceFileId: attachment.fileId,
+        sourceMessageId: attachment.messageId,
+        filename: attachment.filename,
+        mimeType: attachment.mimeType,
+      });
+      return getImportedContext(uploadId, attachment.conversationId);
+    }
     throw error;
   }
 
@@ -420,6 +463,10 @@ export async function getImportedContext(
 }
 
 export async function listActiveContexts(userId: string, conversationId?: string): Promise<ImportedContext[]> {
+  if (!conversationId) {
+    return [];
+  }
+
   const query = `
     select distinct on (f.upload_id) f.upload_id
     from analitrics_meta.uploaded_files f
@@ -457,6 +504,10 @@ export async function getCurrentContext(params: {
   conversationId?: string;
   filename?: string;
 }): Promise<ImportedContext | null> {
+  if (!params.conversationId && !params.filename) {
+    return null;
+  }
+
   const result = await pg.query<{ upload_id: string }>(
     `
       select f.upload_id
@@ -493,6 +544,44 @@ export async function getCurrentContext(params: {
   return getImportedContext(result.rows[0].upload_id, params.conversationId);
 }
 
+function normalizeFilenameCandidate(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .replace(/\.[a-z0-9]+$/i, '')
+    .replace(/[_\-.]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+export async function findImportedContextsMentionedInQuestion(params: {
+  userId: string;
+  question: string;
+}): Promise<ImportedContext[]> {
+  const result = await pg.query<{
+    upload_id: string;
+    filename: string;
+  }>(
+    `
+      select upload_id, filename
+      from analitrics_meta.uploaded_files
+      where user_id = $1
+      order by updated_at desc, created_at desc
+      limit 50
+    `,
+    [params.userId],
+  );
+
+  const normalizedQuestion = normalizeFilenameCandidate(params.question);
+  const matches = result.rows.filter((row) => {
+    const filename = normalizeFilenameCandidate(row.filename);
+    return filename.length > 0 && normalizedQuestion.includes(filename);
+  });
+
+  return Promise.all(matches.map((row) => getImportedContext(row.upload_id)));
+}
+
 export async function describeCurrentContext(params: {
   userId: string;
   conversationId?: string;
@@ -517,9 +606,20 @@ export async function describeCurrentContext(params: {
 
 export async function runSelectQuery(sql: string): Promise<{ rowCount: number; rows: Record<string, unknown>[] }> {
   assertSelectOnly(sql);
-  const result = await pg.query(sql);
-  return {
-    rowCount: result.rowCount ?? result.rows.length,
-    rows: result.rows.slice(0, 200),
-  };
+  const client = await pg.connect();
+  try {
+    await client.query('begin transaction read only');
+    await client.query("set local statement_timeout = '15000ms'");
+    const result = await client.query(sql);
+    await client.query('commit');
+    return {
+      rowCount: result.rowCount ?? result.rows.length,
+      rows: result.rows.slice(0, 200),
+    };
+  } catch (error) {
+    await client.query('rollback').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }

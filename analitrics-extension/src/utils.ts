@@ -89,7 +89,13 @@ export function truncateText(value: string, maxLength = 500): string {
 }
 
 export function assertSelectOnly(sql: string): void {
-  const normalized = sql.trim().toLowerCase();
+  const trimmed = sql.trim();
+  const withoutTrailingSemicolon = trimmed.replace(/;+\s*$/, '');
+  if (withoutTrailingSemicolon.includes(';')) {
+    throw new Error('Solo se permite una sentencia SQL de lectura.');
+  }
+
+  const normalized = withoutTrailingSemicolon.toLowerCase();
   if (!(normalized.startsWith('select') || normalized.startsWith('with'))) {
     throw new Error('Solo se permiten consultas SELECT o WITH.');
   }

@@ -1,8 +1,14 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { buildChartResource } from './charts.js';
-import { describeCurrentContext, getCurrentContext, listActiveContexts, runSelectQuery } from './ingestion.js';
-import { findLatestTabularAttachment } from './librechatFiles.js';
+import {
+  describeCurrentContext,
+  findImportedContextsMentionedInQuestion,
+  getCurrentContext,
+  listActiveContexts,
+  runSelectQuery,
+} from './ingestion.js';
+import { findLatestTabularAttachment, findRecentUserMessageForQuestion } from './librechatFiles.js';
 import { importAttachmentIntoPostgres } from './ingestion.js';
 import { answerWithDirectFileContext } from './directFileAnswer.js';
 
@@ -13,6 +19,131 @@ type RequestContext = {
 
 function formatRows(rows: Record<string, unknown>[]): string {
   return JSON.stringify(rows, null, 2);
+}
+
+type ResolvedAnalyticContext =
+  | {
+      ok: true;
+      conversationId?: string;
+      filename?: string;
+      reason: string;
+    }
+  | {
+      ok: false;
+      message: string;
+    };
+
+async function resolveAnalyticContext(params: {
+  baseContext: RequestContext;
+  pregunta: string;
+  filename?: string;
+  conversationId?: string;
+}): Promise<ResolvedAnalyticContext> {
+  const explicitConversationId = params.conversationId ?? params.baseContext.conversationId;
+  if (explicitConversationId) {
+    return {
+      ok: true,
+      conversationId: explicitConversationId,
+      filename: params.filename,
+      reason: 'conversation_id_explicito',
+    };
+  }
+
+  const recentMessage = await findRecentUserMessageForQuestion({
+    userId: params.baseContext.userId,
+    question: params.pregunta,
+    filename: params.filename,
+  });
+
+  if (recentMessage?.attachments.length === 1) {
+    const attachment = recentMessage.attachments[0];
+    await importAttachmentIntoPostgres(attachment);
+    return {
+      ok: true,
+      conversationId: recentMessage.conversationId,
+      filename: attachment.filename,
+      reason: 'mensaje_reciente_con_un_adjunto',
+    };
+  }
+
+  if (recentMessage && recentMessage.attachments.length === 0) {
+    const contexts = await listActiveContexts(params.baseContext.userId, recentMessage.conversationId);
+    if (contexts.length === 1) {
+      return {
+        ok: true,
+        conversationId: recentMessage.conversationId,
+        filename: contexts[0].filename,
+        reason: 'mensaje_reciente_sin_adjunto_con_contexto_activo',
+      };
+    }
+  }
+
+  if (recentMessage && recentMessage.attachments.length > 1 && !params.filename) {
+    return {
+      ok: false,
+      message: `Encontré varios archivos adjuntos en el mensaje (${recentMessage.attachments
+        .map((attachment) => attachment.filename)
+        .join(', ')}). Indica cuál debo usar.`,
+    };
+  }
+
+  if (params.filename) {
+    const attachment = await findLatestTabularAttachment({
+      userId: params.baseContext.userId,
+      filename: params.filename,
+    });
+    if (attachment) {
+      await importAttachmentIntoPostgres(attachment);
+      return {
+        ok: true,
+        conversationId: attachment.conversationId,
+        filename: attachment.filename,
+        reason: 'filename_explicito_en_adjunto',
+      };
+    }
+
+    const context = await getCurrentContext({
+      userId: params.baseContext.userId,
+      filename: params.filename,
+    });
+    if (context) {
+      return {
+        ok: true,
+        conversationId: context.conversationId,
+        filename: context.filename,
+        reason: 'filename_explicito_importado',
+      };
+    }
+  }
+
+  const mentionedContexts = await findImportedContextsMentionedInQuestion({
+    userId: params.baseContext.userId,
+    question: params.pregunta,
+  });
+
+  if (mentionedContexts.length === 1) {
+    return {
+      ok: true,
+      conversationId: mentionedContexts[0].conversationId,
+      filename: mentionedContexts[0].filename,
+      reason: 'filename_mencionado_en_pregunta',
+    };
+  }
+
+  if (mentionedContexts.length > 1) {
+    return {
+      ok: false,
+      message: `Encontré más de un archivo que coincide con tu pregunta (${mentionedContexts
+        .map((context) => context.filename)
+        .join(', ')}). Indica el nombre exacto del archivo.`,
+    };
+  }
+
+  return {
+    ok: false,
+    message:
+      'No puedo determinar qué archivo de este chat debo usar. Adjunta un CSV/XLSX en el mensaje o indica el nombre exacto del archivo.',
+  };
 }
 
 async function ensureImportedContext(baseContext: RequestContext, filename?: string, conversationId?: string) {
@@ -58,9 +189,27 @@ export function createMcpServer(baseContext: RequestContext): McpServer {
       },
     },
     async ({ pregunta, filename, conversationId }) => {
-      const directAnswer = await answerWithDirectFileContext(baseContext, pregunta, {
+      const resolvedContext = await resolveAnalyticContext({
+        baseContext,
+        pregunta,
         filename,
         conversationId,
+      });
+
+      if (!resolvedContext.ok) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: resolvedContext.message,
+            },
+          ],
+        };
+      }
+
+      const directAnswer = await answerWithDirectFileContext(baseContext, pregunta, {
+        filename: resolvedContext.filename,
+        conversationId: resolvedContext.conversationId,
       });
 
       if (directAnswer.handled) {

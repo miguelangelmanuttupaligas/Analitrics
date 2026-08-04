@@ -16,6 +16,7 @@ export type LibreChatMessage = {
   text?: string;
   isCreatedByUser?: boolean;
   sender?: string;
+  user?: string;
 };
 
 export type ConversationTurnSummary = {

@@ -12,6 +12,34 @@ function compactText(value: string | undefined, maxLength = 900): string {
   return compact.length > maxLength ? `${compact.slice(0, maxLength - 1)}…` : compact;
 }
 
+function normalizeText(value: string | undefined): string {
+  return (value ?? '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function attachmentFromLibreChatFile(params: {
+  userId: string;
+  doc: Pick<LibreChatMessage, 'conversationId' | 'messageId'>;
+  file: NonNullable<LibreChatMessage['files']>[number];
+}): DiscoveredAttachment {
+  const relative = params.file.filepath.replace(/^\/uploads\//, '');
+  return {
+    userId: params.userId,
+    conversationId: params.doc.conversationId,
+    messageId: params.doc.messageId,
+    fileId: params.file.file_id,
+    filename: params.file.filename,
+    mimeType: params.file.type,
+    filepath: params.file.filepath,
+    absolutePath: path.join(config.LIBRECHAT_UPLOAD_ROOT, relative),
+    bytes: params.file.bytes ?? 0,
+  };
+}
+
 export async function listRecentTabularAttachments(limit = 25): Promise<DiscoveredAttachment[]> {
   const db = await getMongoDb();
   const messages = db.collection<LibreChatMessage>('messages');
@@ -42,18 +70,7 @@ export async function listRecentTabularAttachments(limit = 25): Promise<Discover
         continue;
       }
 
-      const relative = file.filepath.replace(/^\/uploads\//, '');
-      attachments.push({
-        userId: String(file.user),
-        conversationId: doc.conversationId,
-        messageId: doc.messageId,
-        fileId: file.file_id,
-        filename: file.filename,
-        mimeType: file.type,
-        filepath: file.filepath,
-        absolutePath: path.join(config.LIBRECHAT_UPLOAD_ROOT, relative),
-        bytes: file.bytes ?? 0,
-      });
+      attachments.push(attachmentFromLibreChatFile({ userId: String(file.user), doc, file }));
     }
   }
 
@@ -122,23 +139,83 @@ export async function listRecentTabularAttachmentsForUser(params: {
         continue;
       }
 
-      const relative = file.filepath.replace(/^\/uploads\//, '');
-      attachments.push({
-        userId: params.userId,
-        conversationId: doc.conversationId,
-        messageId: doc.messageId,
-        fileId: file.file_id,
-        filename: file.filename,
-        mimeType: file.type,
-        filepath: file.filepath,
-        absolutePath: path.join(config.LIBRECHAT_UPLOAD_ROOT, relative),
-        bytes: file.bytes ?? 0,
-      });
+      attachments.push(attachmentFromLibreChatFile({ userId: params.userId, doc, file }));
       seen.add(file.file_id);
     }
   }
 
   return attachments;
+}
+
+export async function findRecentUserMessageForQuestion(params: {
+  userId: string;
+  question: string;
+  filename?: string;
+  limit?: number;
+}): Promise<{
+  conversationId: string;
+  messageId: string;
+  text: string;
+  attachments: DiscoveredAttachment[];
+} | null> {
+  const db = await getMongoDb();
+  const messages = db.collection<LibreChatMessage>('messages');
+  const normalizedQuestion = normalizeText(params.question);
+  const docs = await messages
+    .find(
+      {
+        isCreatedByUser: true,
+        $or: [{ user: params.userId }, { 'files.user': params.userId }],
+      },
+      {
+        projection: {
+          messageId: 1,
+          conversationId: 1,
+          createdAt: 1,
+          text: 1,
+          files: 1,
+        },
+        sort: { createdAt: -1 },
+        limit: Math.max(1, Math.min(params.limit ?? 20, 50)),
+      },
+    )
+    .toArray();
+
+  for (const doc of docs) {
+    const normalizedText = normalizeText(doc.text);
+    const textMatches =
+      normalizedText.length > 0 &&
+      (normalizedText === normalizedQuestion ||
+        normalizedText.includes(normalizedQuestion) ||
+        normalizedQuestion.includes(normalizedText));
+    const tabularAttachments = (doc.files ?? [])
+      .filter((file) => {
+        const belongsToUser = !file.user || String(file.user) === params.userId;
+        const matchesType = tabularMimeTypes.has(file.type);
+        const matchesFilename = params.filename
+          ? file.filename.toLowerCase() === params.filename.toLowerCase()
+          : true;
+        return belongsToUser && matchesType && matchesFilename;
+      })
+      .map((file) => attachmentFromLibreChatFile({ userId: params.userId, doc, file }));
+
+    if (!textMatches && !params.filename) {
+      continue;
+    }
+
+    if (params.filename && !tabularAttachments.length) {
+      continue;
+    }
+
+    return {
+      conversationId: doc.conversationId,
+      messageId: doc.messageId,
+      text: doc.text ?? '',
+      attachments: tabularAttachments,
+    };
+  }
+
+  return null;
 }
 
 export async function listRecentConversationMessages(params: {
@@ -192,14 +269,19 @@ async function findLatestTabularAttachmentOnce(params: {
     files: { $exists: true, $ne: [] },
   };
 
+  if (!params.conversationId && !params.filename) {
+    return null;
+  }
+
   const queries: Record<string, unknown>[] = [];
   if (params.conversationId) {
     queries.push({
       ...baseQuery,
       conversationId: params.conversationId,
     });
+  } else {
+    queries.push(baseQuery);
   }
-  queries.push(baseQuery);
 
   for (const query of queries) {
     const docs = await messages

@@ -668,10 +668,13 @@ export async function buildChartResource(params: {
       ? requestedValueColumn
       : inferred.valueColumn;
 
-  const sortedRows = [...params.rows]
-    .filter((row) => toNumeric(row[valueColumn]) !== null)
-    .sort((left, right) => (toNumeric(right[valueColumn]) ?? 0) - (toNumeric(left[valueColumn]) ?? 0));
-  const limitedRows = sortedRows.slice(0, overrides?.topN ?? (chartType === 'torta' ? 8 : 12));
+  const validRows = [...params.rows].filter((row) => toNumeric(row[valueColumn]) !== null);
+  const sortedRows =
+    chartType === 'lineas'
+      ? validRows
+      : validRows.sort((left, right) => (toNumeric(right[valueColumn]) ?? 0) - (toNumeric(left[valueColumn]) ?? 0));
+  const defaultLimit = chartType === 'lineas' ? 200 : chartType === 'torta' ? 8 : 12;
+  const limitedRows = sortedRows.slice(0, overrides?.topN ?? defaultLimit);
 
   if (!limitedRows.length) {
     throw new Error('La consulta no devolvió pares etiqueta-métrica válidos para graficar.');

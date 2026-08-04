@@ -76,6 +76,64 @@ const directPlanSchema = z.object({
   rationale: z.string(),
 });
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeSqlIdentifier(value: string): string {
+  return value.replace(/^"|"$/g, '').toLowerCase();
+}
+
+function getActiveTableNames(snapshot: ContextSnapshot): Set<string> {
+  return new Set(
+    snapshot.selectedAssets.flatMap((asset) =>
+      asset.tables.flatMap((table) => [
+        table.tableName.toLowerCase(),
+        `analitrics_uploads.${table.tableName}`.toLowerCase(),
+      ]),
+    ),
+  );
+}
+
+function qualifyKnownDirectTables(sql: string, snapshot: ContextSnapshot): string {
+  let qualifiedSql = sql;
+  for (const asset of snapshot.selectedAssets) {
+    for (const table of asset.tables) {
+      const tableName = table.tableName;
+      const pattern = new RegExp(`\\b(from|join)\\s+(?!analitrics_uploads\\.)(?:"?${escapeRegExp(tableName)}"?)\\b`, 'gi');
+      qualifiedSql = qualifiedSql.replace(pattern, (_match, keyword: string) => `${keyword} analitrics_uploads.${tableName}`);
+    }
+  }
+  return qualifiedSql;
+}
+
+function assertDirectSqlUsesOnlySnapshotTables(sql: string, snapshot: ContextSnapshot): void {
+  const allowedTables = getActiveTableNames(snapshot);
+  for (const match of sql.matchAll(/\b(?:with|,)\s+("?[a-z_][\w]*"?)\s+as\s*\(/gi)) {
+    allowedTables.add(normalizeSqlIdentifier(match[1]));
+  }
+  const references = Array.from(
+    sql.matchAll(/\b(?:from|join)\s+((?:"?[a-z_][\w]*"?\.)?"?[a-z_][\w]*"?)/gi),
+  ).map((match) => normalizeSqlIdentifier(match[1]));
+
+  if (!references.length) {
+    return;
+  }
+
+  const invalidReferences = references.filter((reference) => !allowedTables.has(reference));
+  if (invalidReferences.length > 0) {
+    throw new Error(
+      `El SQL directo intentó usar tablas fuera del archivo activo: ${invalidReferences.join(', ')}.`,
+    );
+  }
+}
+
+function sanitizeDirectSql(sql: string, snapshot: ContextSnapshot): string {
+  const qualifiedSql = qualifyKnownDirectTables(sql, snapshot);
+  assertDirectSqlUsesOnlySnapshotTables(qualifiedSql, snapshot);
+  return qualifiedSql;
+}
+
 async function tracedDirectValue<T>(
   node: string,
   fn: () => Promise<T>,
@@ -129,7 +187,7 @@ function parseDirectPlan(value: unknown, question: string): DirectFilePlan {
     yField: typeof candidate.yField === 'string' ? candidate.yField : '',
     colorField: typeof candidate.colorField === 'string' ? candidate.colorField : '',
     topN:
-      typeof candidate.topN === 'number' && Number.isFinite(candidate.topN)
+      typeof candidate.topN === 'number' && Number.isFinite(candidate.topN) && candidate.topN > 0
         ? Math.min(Math.max(Math.trunc(candidate.topN), 1), 50)
         : null,
     clarificationQuestion:
@@ -152,6 +210,30 @@ async function buildDirectPlan(question: string, snapshot: ContextSnapshot): Pro
       `Contexto del archivo:\n${buildSelectedAssetsDescription(snapshot)}`,
     ].join('\n\n'),
     parse: (value) => parseDirectPlan(value, question),
+  });
+}
+
+async function repairDirectPlan(params: {
+  question: string;
+  snapshot: ContextSnapshot;
+  previousPlan: DirectFilePlan;
+  error: unknown;
+}): Promise<DirectFilePlan> {
+  return callJsonWorker({
+    workerName: 'direct_file_repair_plan',
+    systemPrompt: composePrompt(
+      loadPrompt('shared', 'analitrics_core.md'),
+      loadPrompt('shared', 'data_contract.md'),
+      loadPrompt('shared', 'json_contract.md'),
+      loadPrompt('direct_file', 'repair_plan.md'),
+    ),
+    userPrompt: [
+      `Pregunta:\n${params.question}`,
+      `Contexto del archivo:\n${buildSelectedAssetsDescription(params.snapshot)}`,
+      `Plan previo:\n${compactJson(params.previousPlan)}`,
+      `Error SQL:\n${params.error instanceof Error ? params.error.message : String(params.error)}`,
+    ].join('\n\n'),
+    parse: (value) => parseDirectPlan(value, params.question),
   });
 }
 
@@ -225,10 +307,10 @@ export async function answerWithDirectFileContext(
     );
 
     try {
-      const plan = await tracedDirectValue('direct_plan_node', () => buildDirectPlan(question, snapshot), (value) => ({
+      let plan = await tracedDirectValue('direct_plan_node', () => buildDirectPlan(question, snapshot), (value) => ({
         plan: value,
       }));
-      if (plan.responseMode === 'aclaracion') {
+      if ((plan as DirectFilePlan).responseMode === 'aclaracion') {
         const answer =
           plan.clarificationQuestion ||
           'Necesito una precisión adicional para responder con el archivo cargado.';
@@ -257,11 +339,26 @@ export async function answerWithDirectFileContext(
         'direct_execute_node',
         async () => {
           if (plan.sql.trim()) {
-            const result = await runSelectQuery(plan.sql);
+            let result: Awaited<ReturnType<typeof runSelectQuery>>;
+            try {
+              const safeSql = sanitizeDirectSql(plan.sql, snapshot);
+              result = await runSelectQuery(safeSql);
+            } catch (error) {
+              plan = await tracedDirectValue(
+                'direct_repair_plan_node',
+                () => repairDirectPlan({ question, snapshot, previousPlan: plan, error }),
+                (value) => ({ plan: value }),
+              );
+              if (plan.responseMode === 'aclaracion' || !plan.sql.trim()) {
+                return { sqlRowCount, sqlRows, chartSummary };
+              }
+              const safeSql = sanitizeDirectSql(plan.sql, snapshot);
+              result = await runSelectQuery(safeSql);
+            }
             sqlRows = result.rows;
             sqlRowCount = result.rowCount;
 
-            if (plan.responseMode === 'tabla' || plan.responseMode === 'grafico') {
+            if (result.rows.length > 0 && (plan.responseMode === 'tabla' || plan.responseMode === 'grafico')) {
               const chart = await buildChartResource({
                 title: plan.title || 'Resultado analítico',
                 chartType:
@@ -294,6 +391,30 @@ export async function answerWithDirectFileContext(
           chartSummary: value.chartSummary ?? '',
         }),
       );
+
+      if (plan.responseMode === 'aclaracion') {
+        const answer =
+          plan.clarificationQuestion ||
+          'Necesito una precisión adicional para responder con el archivo cargado.';
+        await finishAgentRun({
+          runId,
+          status: 'ok',
+          resultSummary: answer,
+          metadata: {
+            responseMode: plan.responseMode,
+            sqlRowCount: execution.sqlRowCount,
+            hasResource: false,
+          },
+        });
+        return {
+          handled: true,
+          observabilityRunId: runId,
+          snapshot,
+          plan,
+          execution,
+          answer,
+        };
+      }
 
       const answer = await tracedDirectValue(
         'direct_answer_node',

@@ -15,6 +15,7 @@ const envSchema = z.object({
   CONTEXT_MAX_COLUMNS_PER_TABLE: z.coerce.number().int().positive().default(12),
   CONTEXT_MAX_SAMPLE_ROWS_PER_TABLE: z.coerce.number().int().positive().default(3),
   CONTEXT_MAX_RECENT_MESSAGES: z.coerce.number().int().positive().default(8),
+  MAX_TABULAR_UPLOAD_BYTES: z.coerce.number().int().positive().default(50 * 1024 * 1024),
 });
 
 export const config = envSchema.parse({
@@ -32,6 +33,7 @@ export const config = envSchema.parse({
   CONTEXT_MAX_COLUMNS_PER_TABLE: process.env.CONTEXT_MAX_COLUMNS_PER_TABLE,
   CONTEXT_MAX_SAMPLE_ROWS_PER_TABLE: process.env.CONTEXT_MAX_SAMPLE_ROWS_PER_TABLE,
   CONTEXT_MAX_RECENT_MESSAGES: process.env.CONTEXT_MAX_RECENT_MESSAGES,
+  MAX_TABULAR_UPLOAD_BYTES: process.env.MAX_TABULAR_UPLOAD_BYTES,
 });
 
 export const tabularMimeTypes = new Set([
