@@ -10,11 +10,12 @@ const envSchema = z.object({
   WORKER_MODEL: z.string().default('gpt-4.1-mini'),
   LLM_INPUT_COST_PER_1M: z.coerce.number().nonnegative().default(0.4),
   LLM_OUTPUT_COST_PER_1M: z.coerce.number().nonnegative().default(1.6),
-  CONTEXT_MAX_ASSETS: z.coerce.number().int().positive().default(4),
-  CONTEXT_MAX_TABLES_PER_ASSET: z.coerce.number().int().positive().default(3),
-  CONTEXT_MAX_COLUMNS_PER_TABLE: z.coerce.number().int().positive().default(12),
-  CONTEXT_MAX_SAMPLE_ROWS_PER_TABLE: z.coerce.number().int().positive().default(3),
-  CONTEXT_MAX_RECENT_MESSAGES: z.coerce.number().int().positive().default(8),
+  CONTEXT_MAX_ASSETS: z.coerce.number().int().positive().default(5),
+  CONTEXT_MAX_TABLES_PER_ASSET: z.coerce.number().int().positive().default(5),
+  CONTEXT_MAX_COLUMNS_PER_TABLE: z.coerce.number().int().positive().default(24),
+  CONTEXT_MAX_SAMPLE_ROWS_PER_TABLE: z.coerce.number().int().positive().default(5),
+  CONTEXT_MAX_RECENT_MESSAGES: z.coerce.number().int().positive().default(60),
+  CONTEXT_MAX_MESSAGE_CHARS: z.coerce.number().int().positive().default(4000),
   MAX_TABULAR_UPLOAD_BYTES: z.coerce.number().int().positive().default(50 * 1024 * 1024),
   EXPOSE_TECHNICAL_MCP_TOOLS: z
     .string()
@@ -37,6 +38,7 @@ export const config = envSchema.parse({
   CONTEXT_MAX_COLUMNS_PER_TABLE: process.env.CONTEXT_MAX_COLUMNS_PER_TABLE,
   CONTEXT_MAX_SAMPLE_ROWS_PER_TABLE: process.env.CONTEXT_MAX_SAMPLE_ROWS_PER_TABLE,
   CONTEXT_MAX_RECENT_MESSAGES: process.env.CONTEXT_MAX_RECENT_MESSAGES,
+  CONTEXT_MAX_MESSAGE_CHARS: process.env.CONTEXT_MAX_MESSAGE_CHARS,
   MAX_TABULAR_UPLOAD_BYTES: process.env.MAX_TABULAR_UPLOAD_BYTES,
   EXPOSE_TECHNICAL_MCP_TOOLS: process.env.EXPOSE_TECHNICAL_MCP_TOOLS,
 });

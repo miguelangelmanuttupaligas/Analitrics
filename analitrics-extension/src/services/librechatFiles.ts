@@ -7,7 +7,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function compactText(value: string | undefined, maxLength = 900): string {
+function compactText(value: string | undefined, maxLength = config.CONTEXT_MAX_MESSAGE_CHARS): string {
   const compact = (value ?? '').replace(/\s+/g, ' ').trim();
   return compact.length > maxLength ? `${compact.slice(0, maxLength - 1)}…` : compact;
 }
@@ -242,7 +242,7 @@ export async function listRecentConversationMessages(params: {
           isCreatedByUser: 1,
         },
         sort: { createdAt: -1 },
-        limit: Math.max(1, Math.min(params.limit ?? 8, 20)),
+        limit: Math.max(1, Math.min(params.limit ?? config.CONTEXT_MAX_RECENT_MESSAGES, 80)),
       },
     )
     .toArray();
