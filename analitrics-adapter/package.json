@@ -1,0 +1,19 @@
+{
+  "name": "analitrics-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Adapter services between LibreChat and Analitrics.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start:upload-file-wrapper": "node dist/uploadFileWrapperServer.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.2.0",
+    "typescript": "^5.9.2"
+  }
+}

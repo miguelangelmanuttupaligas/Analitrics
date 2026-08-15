@@ -1,0 +1,279 @@
+services:
+  gateway:
+    container_name: analitrics-analitrics-gateway
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+      admin-panel:
+        condition: service_started
+      upload-file-wrapper:
+        condition: service_started
+    ports:
+      - "${GATEWAY_HTTP_PORT:-3090}:80"
+      - "${GATEWAY_HTTPS_PORT:-3443}:443"
+    environment:
+      PORT: ${PORT:-3080}
+      ANALITRICS_DEFAULT_TENANT_ID: ${ANALITRICS_DEFAULT_TENANT_ID:-analitrics}
+      PUBLIC_PORT: ${PUBLIC_PORT:-3443}
+      PUBLIC_HOST: ${PUBLIC_HOST:-analitrics-test.com}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-https://analitrics-test.com:3443}
+    command: >
+      /bin/sh -c "envsubst '$$PORT $$ANALITRICS_DEFAULT_TENANT_ID $$PUBLIC_PORT $$PUBLIC_HOST $$PUBLIC_ORIGIN' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf
+      && nginx -g 'daemon off;'"
+    volumes:
+      - ./gateway/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - volume-analitrics-librechat-certs:/etc/nginx/certs:ro
+    networks:
+      network-analitrics:
+        aliases:
+          - ${PUBLIC_HOST:-analitrics-test.com}
+
+  api:
+    container_name: analitrics-analitrics-api
+    image: registry.librechat.ai/danny-avila/librechat@sha256:c5db3331b845e1f289f8d04c0c77936c4bbe372f76730a804abc1c37e44d23a9
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    expose:
+      - "${PORT:-3080}"
+    depends_on:
+      mongodb:
+        condition: service_started
+      rag_api:
+        condition: service_started
+      storage-rustfs-init:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: ${PORT:-3080}
+      MONGO_URI: mongodb://mongodb:27017/LibreChat
+      RAG_PORT: ${RAG_PORT:-8000}
+      RAG_API_URL: http://rag_api:${RAG_PORT:-8000}
+      TRUST_PROXY: 1
+      SEARCH: "false"
+      USE_REDIS: "false"
+      USE_REDIS_STREAMS: "false"
+      AWS_ENDPOINT_URL: http://storage-rustfs:9000
+      AWS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY_ID:?RUSTFS_ACCESS_KEY_ID is required}
+      AWS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_ACCESS_KEY:?RUSTFS_SECRET_ACCESS_KEY is required}
+      AWS_REGION: ${RUSTFS_REGION:-us-east-1}
+      AWS_BUCKET_NAME: ${RUSTFS_BUCKET_NAME:-librechat}
+      AWS_FORCE_PATH_STYLE: "true"
+      LIBRECHAT_TEMP_CREDENTIALS_PATH: /app/data/.env.temp
+      NO_PROXY: localhost,127.0.0.1,::1,mongodb,vectordb,rag_api,keycloak,gateway,postgresql,storage-rustfs,host.docker.internal,${PUBLIC_HOST:-analitrics-test.com}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./librechat.yaml:/app/librechat.yaml:ro
+      - volume-analitrics-librechat-uploads:/app/uploads
+      - volume-analitrics-librechat-logs:/app/logs
+      - volume-analitrics-librechat-skill:/app/skill
+      - volume-analitrics-librechat-data:/app/data
+      - volume-analitrics-librechat-images:/app/client/public/images
+    networks:
+      - network-analitrics
+
+  admin-panel:
+    container_name: analitrics-analitrics-admin-panel
+    image: registry.librechat.ai/clickhouse/librechat-admin-panel:latest
+    restart: unless-stopped
+    expose:
+      - "3000"
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      PORT: 3000
+      SESSION_SECRET: ${ADMIN_PANEL_SESSION_SECRET}
+      API_SERVER_URL: http://api:${PORT:-3080}
+      VITE_API_BASE_URL: ${DOMAIN_CLIENT:-http://localhost:3080}
+      SESSION_COOKIE_SECURE: ${ADMIN_PANEL_SESSION_COOKIE_SECURE:-false}
+    networks:
+      - network-analitrics
+
+  upload-file-wrapper:
+    container_name: analitrics-analitrics-upload-file-wrapper
+    build:
+      context: ../analitrics-adapter
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    expose:
+      - "3096"
+    environment:
+      PORT: 3096
+      LIBRECHAT_API_ORIGIN: http://api:${PORT:-3080}
+      TABULAR_CONTEXT_TO_S3_ENABLED: "true"
+    command: node dist/uploadFileWrapperServer.js
+    networks:
+      - network-analitrics
+
+  storage-rustfs:
+    container_name: analitrics-analitrics-storage-rustfs
+    image: rustfs/rustfs:latest
+    restart: unless-stopped
+    init: true
+    command: /data
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY_ID:?RUSTFS_ACCESS_KEY_ID is required}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_ACCESS_KEY:?RUSTFS_SECRET_ACCESS_KEY is required}
+      RUSTFS_ADDRESS: :9000
+      RUSTFS_CONSOLE_ADDRESS: :9001
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_OBS_LOGGER_LEVEL: error
+      RUSTFS_OBS_LOG_DIRECTORY: /var/log/rustfs/
+    expose:
+      - "9000"
+    volumes:
+      - volume-analitrics-librechat-storage-rustfs-data:/data
+      - volume-analitrics-librechat-storage-rustfs-logs:/var/log/rustfs
+    networks:
+      network-analitrics:
+        aliases:
+          - storage-rustfs
+
+  storage-rustfs-init:
+    container_name: analitrics-analitrics-storage-rustfs-init
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    restart: "no"
+    depends_on:
+      storage-rustfs:
+        condition: service_started
+    environment:
+      RUSTFS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY_ID:?RUSTFS_ACCESS_KEY_ID is required}
+      RUSTFS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_ACCESS_KEY:?RUSTFS_SECRET_ACCESS_KEY is required}
+      RUSTFS_BUCKET_NAME: ${RUSTFS_BUCKET_NAME:-librechat}
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set rustfs http://storage-rustfs:9000 \"$${RUSTFS_ACCESS_KEY_ID}\" \"$${RUSTFS_SECRET_ACCESS_KEY}\"; do
+        sleep 1;
+      done;
+      mc mb --ignore-existing rustfs/\"$${RUSTFS_BUCKET_NAME}\";
+      "
+    networks:
+      - network-analitrics
+
+  mongodb:
+    container_name: analitrics-analitrics-mongodb
+    image: mongo:8.0.20
+    restart: unless-stopped
+    user: "${MONGO_UID:-999}:${MONGO_GID:-999}"
+    command: mongod --noauth
+    volumes:
+      - volume-analitrics-librechat-mongodb:/data/db
+    networks:
+      - network-analitrics
+
+  vectordb:
+    container_name: analitrics-analitrics-vectordb
+    image: pgvector/pgvector:0.8.0-pg15-trixie
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${RAG_POSTGRES_DB:-librechat}
+      POSTGRES_USER: ${RAG_POSTGRES_USER:-librechat}
+      POSTGRES_PASSWORD: ${RAG_POSTGRES_PASSWORD:?RAG_POSTGRES_PASSWORD is required}
+    volumes:
+      - volume-analitrics-librechat-vectordb:/var/lib/postgresql/data
+    networks:
+      - network-analitrics
+
+  rag_api:
+    container_name: analitrics-analitrics-rag-api
+    image: registry.librechat.ai/danny-avila/librechat-rag-api-dev-lite:latest
+    restart: unless-stopped
+    depends_on:
+      vectordb:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      DB_HOST: vectordb
+      DB_PORT: 5432
+      POSTGRES_DB: ${RAG_POSTGRES_DB:-librechat}
+      POSTGRES_USER: ${RAG_POSTGRES_USER:-librechat}
+      DATABASE_USER: ${RAG_POSTGRES_USER:-librechat}
+      POSTGRES_PASSWORD: ${RAG_POSTGRES_PASSWORD:?RAG_POSTGRES_PASSWORD is required}
+      RAG_PORT: ${RAG_PORT:-8000}
+    networks:
+      - network-analitrics
+
+networks:
+  network-analitrics:
+    name: network-analitrics
+    external: true
+
+volumes:
+  volume-analitrics-librechat-mongodb:
+    name: volume-analitrics-librechat-mongodb
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/analitrics/librechat/mongodb
+  volume-analitrics-librechat-vectordb:
+    name: volume-analitrics-librechat-vectordb
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/analitrics/librechat/vectordb
+  volume-analitrics-librechat-uploads:
+    name: volume-analitrics-librechat-uploads
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/analitrics/librechat/uploads
+  volume-analitrics-librechat-logs:
+    name: volume-analitrics-librechat-logs
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/analitrics/librechat/logs
+  volume-analitrics-librechat-skill:
+    name: volume-analitrics-librechat-skill
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/analitrics/librechat/skill
+  volume-analitrics-librechat-data:
+    name: volume-analitrics-librechat-data
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/analitrics/librechat/data
+  volume-analitrics-librechat-images:
+    name: volume-analitrics-librechat-images
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/analitrics/librechat/images
+  volume-analitrics-librechat-certs:
+    name: volume-analitrics-librechat-certs
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/analitrics/librechat/certs
+  volume-analitrics-librechat-storage-rustfs-data:
+    name: volume-analitrics-librechat-storage-rustfs-data
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/analitrics/storage/data
+  volume-analitrics-librechat-storage-rustfs-logs:
+    name: volume-analitrics-librechat-storage-rustfs-logs
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/analitrics/storage/logs

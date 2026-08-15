@@ -1,49 +1,45 @@
 # Analitrics
 
-Repositorio de despliegue y personalización de Analitrics sobre LibreChat.
+Analitrics es un chat analítico construido sobre LibreChat, con identidad vía Keycloak, almacenamiento persistente de archivos en RustFS y una capa analítica Python enfocada inicialmente en archivos CSV/XLS/XLSX.
 
-## Carpetas principales
+El contrato rector está en [01_MANIFEST.md](./01_MANIFEST.md). Si otro documento contradice el manifiesto, manda el manifiesto.
 
-- [librechat](./librechat): configuración, `.env`, `librechat.yaml` y `docker-compose`
-- [analitrics-extension](./analitrics-extension): orquestador, workers IA, contexto tabular y MCP interno
-- [librechat-build-src](./librechat-build-src): código fuente base de LibreChat usado para compilar la imagen personalizada
-- [docs](./docs): documentación operativa y técnica
+## Estructura activa
 
-## Archivos que normalmente editarás
+- `librechat-src/`: runtime y configuración de LibreChat, gateway, RustFS y dependencias del chat.
+- `keycloak/`: SSO, realm y theme Analitrics.
+- `analitrics-adapter/`: wrappers/proxies mínimos cerca de LibreChat.
+- `analitrics-app/`: lógica analítica Python, DuckDB, profiling y NL-SQL.
+- `docs/`: decisiones y notas de arquitectura.
 
-- [librechat/.env.prod](./librechat/.env.prod): plantilla productiva basada en `analitrics.com`
-- [librechat/.env.example](./librechat/.env.example): plantilla mínima
-- [librechat/librechat.yaml](./librechat/librechat.yaml): branding, modelo Analitrics y MCPs
-- [librechat/docker-compose.prod.yml](./librechat/docker-compose.prod.yml): stack productivo
-- [docs/nginx-analitrics.conf](./docs/nginx-analitrics.conf): sitio Nginx para `analitrics.com`
-- [docs/DEPLOY_PROD.md](./docs/DEPLOY_PROD.md): guía de despliegue productivo
+## Comandos principales
 
-## Despliegue productivo
-
-La guía principal está aquí:
-
-- [DEPLOY_PROD.md](./docs/DEPLOY_PROD.md)
-
-Flujo resumido:
-
-1. Copiar el repo a `/opt/librechat`
-2. Ajustar `/opt/librechat/librechat/.env`
-3. Verificar `/opt/librechat/librechat/librechat.yaml`
-4. Levantar `docker compose -f docker-compose.prod.yml up -d --build`
-5. Reemplazar el sitio Nginx `analitrics`
-6. Validar contenedores `healthy`
-
-## Notas
-
-- El frontend y backend de LibreChat se sirven desde `analitrics-api` en `127.0.0.1:3080`
-- `rag_api` usa `vectordb` y requiere `POSTGRES_DB`, `POSTGRES_USER` y `POSTGRES_PASSWORD` mapeados desde `VECTOR_DB_*`
-- La lógica del producto vive en `analitrics-extension`; los cambios recientes de esta fase fueron de infraestructura y despliegue
-
-## Actualizar cambios
-
-```sh
-cd /opt/librechat/librechat
-docker compose -f docker-compose.prod.yml build analitrics-extension
-docker compose -f docker-compose.prod.yml up -d analitrics-extension
-docker compose -f docker-compose.prod.yml restart api
+```bash
+make keycloak up
+make librechat up
+make storage-metadata
+make analitrics-build
 ```
+
+Para detener:
+
+```bash
+make librechat down
+make keycloak down
+```
+
+## Alcance del MVP
+
+El MVP trabaja con archivos cargados por usuario:
+
+- CSV/XLS/XLSX se preservan como objetos en RustFS.
+- Analitrics descarga los originales y los procesa con DuckDB.
+- El LLM recibe catálogo, profiling, muestras pequeñas y diccionario, no archivos completos.
+- El feedback del usuario puede corregir o confirmar el diccionario analítico de la conversación.
+
+Queda fuera del MVP:
+
+- conectar bases de datos empresariales externas;
+- crear MCP servers productivos;
+- mezclar catálogos de archivos con catálogos de bases de datos;
+- mantener un fork fuente de LibreChat sin una decisión explícita.

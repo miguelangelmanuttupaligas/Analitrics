@@ -1,32 +1,32 @@
 .DS_Store
 
-# Root deployment secrets
+# Logs
 *.log
 
 # Local env secrets
-librechat/.env
-librechat/.env.prod
+*.env
+*.env.*
+!*.env.example
+librechat-src/.env
+keycloak/.env
+credenciales.txt
 
 # Runtime data
-librechat/uploads/
-librechat/logs/
-librechat/data-node/
-librechat/meili_data_v1.35.1/
-librechat/recovered-dist/
-librechat/frontend-work/
-librechat/mcp-postgres/node_modules/
+/var/analitrics/
 
 # Local build/runtime outputs
-analitrics-extension/node_modules/
-analitrics-extension/dist/
-librechat-build-src/node_modules/
-librechat-build-src/client/dist/
-librechat-build-src/api/dist/
-librechat-build-src/packages/*/dist/
-librechat-build-src/.turbo/
+**/node_modules/
+**/dist/
+**/.turbo/
+**/__pycache__/
+*.pyc
 
 # Editor / OS noise
-librechat-build-src/.vscode/
-librechat-build-src/.idea/
-data_2024_2026.xlsx
-ventas_2024_convertidas_a_2023.xlsx
+.vscode/
+.idea/
+
+# Local test data
+data_*.xlsx
+ventas_*.xlsx
+*.duckdb
+*.duckdb.wal
