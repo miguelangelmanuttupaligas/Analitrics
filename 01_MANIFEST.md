@@ -404,34 +404,32 @@ Pendientes de endurecimiento:
 
 ## 13. Contrato de URLs y reverse proxy
 
-Producción debe operar con el dominio público principal y un subdominio administrativo:
+Producción debe operar con un único dominio público:
 
 - aplicación: `https://analitrics.com/`;
 - login OIDC: `https://analitrics.com/oauth/openid`;
 - callback OIDC: `https://analitrics.com/oauth/openid/callback`;
 - callback OIDC del LibreChat Admin Panel: `https://analitrics.com/api/admin/oauth/openid/callback`;
-- LibreChat Admin Panel: `https://admin.analitrics.com/`;
+- LibreChat Admin Panel: `https://analitrics.com/admin`;
 - Keycloak realm: `https://analitrics.com/auth/realms/analitrics`;
 - Keycloak Admin Console: `https://analitrics.com/auth/admin/`.
 
 Regla para la VM:
 
-- el NGINX público debe atender `analitrics.com` para la app y `admin.analitrics.com` para LibreChat Admin Panel;
+- el NGINX público debe tener `server_name analitrics.com`;
 - `/auth/` debe proxyear a Keycloak por la red interna Docker;
 - `/` debe proxyear al gateway o API de LibreChat por la red interna Docker;
-- `admin.analitrics.com/` debe proxyear al Admin Panel de LibreChat;
+- `/admin/` debe proxyear al Admin Panel de LibreChat;
 - no se deben publicar directamente los puertos internos de LibreChat API, Keycloak, MongoDB o Postgres;
-- en local se usan `https://analitrics-test.com:3443` y `https://admin.analitrics-test.com:3443`; esos dominios y puerto son solo una concesión de desarrollo, no forman parte de la URL de producción.
+- en local se usa `https://analitrics-test.com:3443`; ese dominio y puerto son solo una concesión de desarrollo, no forma parte de la URL de producción.
 
 Variables de producción esperadas:
 
 - `PUBLIC_ORIGIN=https://analitrics.com`;
-- `ADMIN_PUBLIC_HOST=admin.analitrics.com`;
-- `ADMIN_PUBLIC_ORIGIN=https://admin.analitrics.com`;
 - `PUBLIC_PORT=443`;
 - `DOMAIN_CLIENT=https://analitrics.com`;
 - `DOMAIN_SERVER=https://analitrics.com`;
-- `ADMIN_PANEL_URL=https://admin.analitrics.com`;
+- `ADMIN_PANEL_URL=https://analitrics.com/admin`;
 - `OPENID_ISSUER=https://analitrics.com/auth/realms/analitrics`;
 - `KC_HOSTNAME=https://analitrics.com/auth`;
 - `KC_HOSTNAME_ADMIN=https://analitrics.com/auth`.
@@ -440,12 +438,10 @@ Variables locales esperadas:
 
 - `PUBLIC_HOST=analitrics-test.com`;
 - `PUBLIC_ORIGIN=https://analitrics-test.com:3443`;
-- `ADMIN_PUBLIC_HOST=admin.analitrics-test.com`;
-- `ADMIN_PUBLIC_ORIGIN=https://admin.analitrics-test.com:3443`;
 - `PUBLIC_PORT=3443`;
 - `DOMAIN_CLIENT=https://analitrics-test.com:3443`;
 - `DOMAIN_SERVER=https://analitrics-test.com:3443`;
-- `ADMIN_PANEL_URL=https://admin.analitrics-test.com:3443`;
+- `ADMIN_PANEL_URL=https://analitrics-test.com:3443/admin`;
 - `OPENID_ISSUER=https://analitrics-test.com:3443/auth/realms/analitrics`;
 - `KC_HOSTNAME=https://analitrics-test.com:3443/auth`;
 - `KC_HOSTNAME_ADMIN=https://analitrics-test.com:3443/auth`.
@@ -457,9 +453,10 @@ Redirect URIs locales que debe permitir el cliente OIDC `librechat` en Keycloak:
 
 Nota:
 
-- `https://admin.analitrics.com/` es el panel administrativo de LibreChat;
+- `https://analitrics.com/admin` es el panel administrativo de LibreChat;
 - `https://analitrics.com/auth/admin/` es el panel administrativo de Keycloak;
 - el cliente OIDC `librechat` de Keycloak debe permitir ambos redirect URIs: `/oauth/openid/callback` para LibreChat y `/api/admin/oauth/openid/callback` para LibreChat Admin Panel;
+- como LibreChat upstream solo detecta el flujo admin por origen distinto, Analitrics usa una imagen derivada mínima de LibreChat API para reconocer `ADMIN_PANEL_URL` por path (`/admin`) en el mismo origen;
 - el acceso a LibreChat Admin Panel debe depender del rol `ADMIN` dentro de LibreChat;
 - para administradores federados, Keycloak debe emitir un claim OIDC y LibreChat debe mapearlo con `OPENID_ADMIN_ROLE`;
 - ambos deben endurecerse antes de producción con MFA, usuarios nominales y restricción de red/IP.
