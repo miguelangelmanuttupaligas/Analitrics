@@ -3,7 +3,7 @@ SHELL := /usr/bin/env bash
 STACKS := keycloak librechat phoenix
 STACK := $(firstword $(filter $(STACKS),$(MAKECMDGOALS)))
 
-.PHONY: keycloak librechat phoenix up down storage-metadata analitrics-build analitrics-profile analitrics-nl-sql analitrics-agent prepare-dirs ensure-network cleanup-network help
+.PHONY: keycloak librechat phoenix up down storage-metadata analitrics-build analitrics-profile analitrics-nl-sql analitrics-agent phoenix-guide prepare-dirs ensure-network cleanup-network help
 
 keycloak librechat phoenix:
 	@:
@@ -92,6 +92,12 @@ analitrics-agent:
 		-e PHOENIX_PROJECT_NAME="$${PHOENIX_PROJECT_NAME:-analitrics-mvp}" \
 		analitrics-app:local scripts/agent_file.py $${FILE_ID:+--file-id "$$FILE_ID"} $${FILENAME:+--filename "$$FILENAME"} --question "$$QUESTION"
 
+phoenix-guide:
+	@docker run --rm --network network-analitrics \
+		-e OTEL_EXPORTER_OTLP_ENDPOINT="$${OTEL_EXPORTER_OTLP_ENDPOINT:-http://phoenix:4317}" \
+		-e PHOENIX_PROJECT_NAME="$${PHOENIX_PROJECT_NAME:-analitrics-mvp}" \
+		analitrics-app:local scripts/phoenix_guide_trace.py
+
 prepare-dirs:
 	@set -euo pipefail; \
 	dirs=( \
@@ -144,3 +150,4 @@ help:
 	@echo "  FILE_ID=<file_id> make analitrics-profile"
 	@echo "  QUESTION='pregunta...' FILE_ID=<file_id> make analitrics-nl-sql"
 	@echo "  QUESTION='pregunta...' FILE_ID=<file_id> make analitrics-agent"
+	@echo "  make phoenix-guide"

@@ -51,7 +51,7 @@ server {
   }
 
   location = /admin {
-    return 301 /admin/;
+    return 302 ${PUBLIC_ORIGIN}/admin/;
   }
 
   location = /auth {
