@@ -51,7 +51,7 @@ server {
   }
 
   location = /admin {
-    return 302 ${PUBLIC_ORIGIN}/admin/;
+    return 302 ${ADMIN_PUBLIC_ORIGIN}/;
   }
 
   location = /auth {
@@ -77,79 +77,8 @@ server {
     proxy_buffering off;
   }
 
-  location /admin/assets/ {
-    proxy_pass http://admin-panel:3000/assets/;
-    proxy_http_version 1.1;
-
-    proxy_set_header Host $http_host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto https;
-    proxy_set_header X-Forwarded-Host $host;
-    proxy_set_header X-Forwarded-Port ${PUBLIC_PORT};
-
-    sub_filter_once off;
-    sub_filter_types application/javascript text/javascript;
-    sub_filter 'basepath:`/`' 'basepath:`/admin`';
-    sub_filter 'basepath:``' 'basepath:`/admin`';
-    sub_filter 'ua=function(e){return`/`+e}' 'ua=function(e){return`/admin/`+e}';
-    sub_filter '`/assets/' '`/admin/assets/';
-    sub_filter '"/assets/' '"/admin/assets/';
-  }
-
-  location = /admin/favicon.ico {
-    proxy_pass http://admin-panel:3000/favicon.ico;
-    proxy_http_version 1.1;
-
-    proxy_set_header Host $http_host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto https;
-    proxy_set_header X-Forwarded-Host $host;
-    proxy_set_header X-Forwarded-Port ${PUBLIC_PORT};
-  }
-
   location /admin/ {
-    proxy_pass http://admin-panel:3000/;
-    proxy_http_version 1.1;
-
-    proxy_set_header Host $http_host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto https;
-    proxy_set_header X-Forwarded-Host $host;
-    proxy_set_header X-Forwarded-Port ${PUBLIC_PORT};
-    proxy_set_header X-Forwarded-Prefix /admin;
-
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection $connection_upgrade;
-    proxy_buffering off;
-
-    sub_filter_once off;
-    sub_filter_types application/javascript text/javascript;
-    sub_filter 'basepath:`/`' 'basepath:`/admin`';
-    sub_filter 'basepath:``' 'basepath:`/admin`';
-    sub_filter 'ua=function(e){return`/`+e}' 'ua=function(e){return`/admin/`+e}';
-    sub_filter '`/assets/' '`/admin/assets/';
-    sub_filter '"/assets/' '"/admin/assets/';
-    sub_filter '"/favicon.ico"' '"/admin/favicon.ico"';
-  }
-
-  location /_serverFn/ {
-    proxy_pass http://admin-panel:3000;
-    proxy_http_version 1.1;
-
-    proxy_set_header Host $http_host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto https;
-    proxy_set_header X-Forwarded-Host $host;
-    proxy_set_header X-Forwarded-Port ${PUBLIC_PORT};
-    proxy_set_header X-Forwarded-Prefix /admin;
-
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection $connection_upgrade;
-    proxy_buffering off;
+    return 302 ${ADMIN_PUBLIC_ORIGIN}/;
   }
 
   location /auth/ {
@@ -181,6 +110,40 @@ server {
 
     # Trust boundary: overwrite any client-supplied tenant header.
     proxy_set_header X-Tenant-Id "${ANALITRICS_DEFAULT_TENANT_ID}";
+
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_buffering off;
+  }
+}
+
+server {
+  listen 80;
+  server_name ${ADMIN_PUBLIC_HOST};
+
+  return 301 https://$host$request_uri;
+}
+
+server {
+  listen 443 ssl;
+  listen 3443 ssl;
+  server_name ${ADMIN_PUBLIC_HOST};
+
+  ssl_certificate /etc/nginx/certs/analitrics.crt;
+  ssl_certificate_key /etc/nginx/certs/analitrics.key;
+
+  client_max_body_size 25m;
+
+  location / {
+    proxy_pass http://admin-panel:3000;
+    proxy_http_version 1.1;
+
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Port ${PUBLIC_PORT};
 
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection $connection_upgrade;
