@@ -239,7 +239,7 @@ def validate_select_sql(sql: str) -> None:
     if len(expressions) != 1:
         raise RuntimeError("Only one SQL statement is allowed")
     expression = expressions[0]
-    if expression.key not in {"select", "with"}:
+    if expression.key not in {"select", "with", "union"}:
         raise RuntimeError(f"Only SELECT/WITH queries are allowed, got: {expression.key}")
 
 
