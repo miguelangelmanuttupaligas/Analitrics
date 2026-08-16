@@ -409,6 +409,7 @@ Producción debe operar con un único dominio público:
 - aplicación: `https://analitrics.com/`;
 - login OIDC: `https://analitrics.com/oauth/openid`;
 - callback OIDC: `https://analitrics.com/oauth/openid/callback`;
+- callback OIDC del LibreChat Admin Panel: `https://analitrics.com/api/admin/oauth/openid/callback`;
 - LibreChat Admin Panel: `https://analitrics.com/admin`;
 - Keycloak realm: `https://analitrics.com/auth/realms/analitrics`;
 - Keycloak Admin Console: `https://analitrics.com/auth/admin/`.
@@ -444,10 +445,16 @@ Variables locales esperadas:
 - `KC_HOSTNAME=https://analitrics-test.com:3443/auth`;
 - `KC_HOSTNAME_ADMIN=https://analitrics-test.com:3443/auth`.
 
+Redirect URIs locales que debe permitir el cliente OIDC `librechat` en Keycloak:
+
+- `https://analitrics-test.com:3443/oauth/openid/callback`;
+- `https://analitrics-test.com:3443/api/admin/oauth/openid/callback`.
+
 Nota:
 
 - `https://analitrics.com/admin` es el panel administrativo de LibreChat;
 - `https://analitrics.com/auth/admin/` es el panel administrativo de Keycloak;
+- el cliente OIDC `librechat` de Keycloak debe permitir ambos redirect URIs: `/oauth/openid/callback` para LibreChat y `/api/admin/oauth/openid/callback` para LibreChat Admin Panel;
 - el acceso a LibreChat Admin Panel debe depender del rol `ADMIN` dentro de LibreChat;
 - para administradores federados, Keycloak debe emitir un claim OIDC y LibreChat debe mapearlo con `OPENID_ADMIN_ROLE`;
 - ambos deben endurecerse antes de producción con MFA, usuarios nominales y restricción de red/IP.
