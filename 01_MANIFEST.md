@@ -161,12 +161,13 @@ Decisiones:
 
 - LibreChat Agents + MCP será la interfaz objetivo, pero no se implementa todavía en esta etapa;
 - `analitrics-app/` será el runtime Python para lógica analítica;
+- LangGraph será la herramienta inicial de orquestación del agente analítico;
 - Python descargará archivos desde RustFS usando metadata de MongoDB (`file_id`, `tenantId`, `source=s3`, `storageKey`);
 - CSV/XLS/XLSX se cargarán en DuckDB;
 - Excel se leerá con `openpyxl` vía pandas;
 - NL-SQL generará SQL DuckDB;
 - `sqlglot` validará SQL de solo lectura antes de ejecutar;
-- el flujo incluirá una revisión del LLM sobre su propia respuesta: plan/generación SQL, validación, ejecución, respuesta, crítica y ajuste final.
+- el flujo incluirá una revisión del LLM sobre su propia respuesta: validación de alcance, plan/generación SQL, validación, ejecución, respuesta, crítica, ajuste final y generación de especificación de gráfico cuando aplique.
 
 Queda fuera de esta etapa:
 
@@ -182,6 +183,27 @@ Principio:
 - para datos tabulares, el LLM no debe recibir el archivo completo como texto bruto;
 - debe recibir catálogo/schema/muestras y consultar datos mediante SQL validado.
 - el catálogo del MVP pertenece únicamente a archivos cargados por el usuario y procesados con DuckDB.
+- el agente solo debe responder preguntas relacionadas con la data cargada, su catálogo, profiling, diccionario o resultados derivados;
+- si la pregunta no pertenece al ámbito analítico de los archivos disponibles, debe rechazarla de forma breve y no ejecutar SQL ni herramientas analíticas.
+
+Herramientas controladas iniciales:
+
+- `resolve_file_metadata`: resuelve `file_id`, `tenantId`, `storageKey` y metadata desde MongoDB;
+- `download_file`: descarga el objeto original desde RustFS;
+- `load_file_to_duckdb`: carga CSV/XLS/XLSX a DuckDB;
+- `profile_tables`: genera catálogo técnico mínimo;
+- `check_question_scope`: valida si la pregunta pertenece a la data disponible;
+- `generate_sql`: genera SQL DuckDB;
+- `validate_sql`: bloquea SQL no read-only;
+- `execute_sql`: ejecuta solo SQL validado;
+- `compose_answer`: redacta respuesta usando solo resultados;
+- `critique_answer`: revisa consistencia de la respuesta;
+- `generate_chart_spec`: genera una especificación de gráfico cuando los resultados lo justifiquen.
+
+Regla:
+
+- el LLM no tendrá acceso a bash libre ni a ejecución arbitraria de Python en el MVP;
+- toda acción debe pasar por herramientas con contrato explícito.
 
 Contrato de alcance:
 

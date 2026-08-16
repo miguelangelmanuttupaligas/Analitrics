@@ -3,7 +3,7 @@ SHELL := /usr/bin/env bash
 STACKS := keycloak librechat
 STACK := $(firstword $(filter $(STACKS),$(MAKECMDGOALS)))
 
-.PHONY: keycloak librechat up down storage-metadata analitrics-build analitrics-profile analitrics-nl-sql prepare-dirs ensure-network cleanup-network help
+.PHONY: keycloak librechat up down storage-metadata analitrics-build analitrics-profile analitrics-nl-sql analitrics-agent prepare-dirs ensure-network cleanup-network help
 
 keycloak librechat:
 	@:
@@ -45,7 +45,7 @@ analitrics-profile:
 		-e MONGO_DB=LibreChat \
 		-e AWS_ENDPOINT_URL=http://storage-rustfs:9000 \
 		-e AWS_BUCKET_NAME="$${RUSTFS_BUCKET_NAME:-librechat}" \
-		analitrics-app:local --mode profile $${FILE_ID:+--file-id "$$FILE_ID"} $${FILENAME:+--filename "$$FILENAME"}
+		analitrics-app:local scripts/nl_sql_file.py --mode profile $${FILE_ID:+--file-id "$$FILE_ID"} $${FILENAME:+--filename "$$FILENAME"}
 
 analitrics-nl-sql:
 	@if [[ -z "$${QUESTION:-}" ]]; then \
@@ -63,7 +63,25 @@ analitrics-nl-sql:
 		-e MONGO_DB=LibreChat \
 		-e AWS_ENDPOINT_URL=http://storage-rustfs:9000 \
 		-e AWS_BUCKET_NAME="$${RUSTFS_BUCKET_NAME:-librechat}" \
-		analitrics-app:local --mode nl-sql $${FILE_ID:+--file-id "$$FILE_ID"} $${FILENAME:+--filename "$$FILENAME"} --question "$$QUESTION"
+		analitrics-app:local scripts/nl_sql_file.py --mode nl-sql $${FILE_ID:+--file-id "$$FILE_ID"} $${FILENAME:+--filename "$$FILENAME"} --question "$$QUESTION"
+
+analitrics-agent:
+	@if [[ -z "$${QUESTION:-}" ]]; then \
+		echo "Usage: QUESTION='pregunta...' FILE_ID=<file_id> make analitrics-agent"; \
+		echo "   or: QUESTION='pregunta...' FILENAME=data_2024_2026.xlsx make analitrics-agent"; \
+		exit 2; \
+	fi
+	@if [[ -z "$${FILE_ID:-}" && -z "$${FILENAME:-}" ]]; then \
+		echo "Usage: QUESTION='pregunta...' FILE_ID=<file_id> make analitrics-agent"; \
+		echo "   or: QUESTION='pregunta...' FILENAME=data_2024_2026.xlsx make analitrics-agent"; \
+		exit 2; \
+	fi
+	@docker run --rm --network network-analitrics --env-file librechat-src/.env \
+		-e MONGO_URI=mongodb://mongodb:27017/LibreChat \
+		-e MONGO_DB=LibreChat \
+		-e AWS_ENDPOINT_URL=http://storage-rustfs:9000 \
+		-e AWS_BUCKET_NAME="$${RUSTFS_BUCKET_NAME:-librechat}" \
+		analitrics-app:local scripts/agent_file.py $${FILE_ID:+--file-id "$$FILE_ID"} $${FILENAME:+--filename "$$FILENAME"} --question "$$QUESTION"
 
 prepare-dirs:
 	@set -euo pipefail; \
@@ -113,3 +131,4 @@ help:
 	@echo "  make analitrics-build"
 	@echo "  FILE_ID=<file_id> make analitrics-profile"
 	@echo "  QUESTION='pregunta...' FILE_ID=<file_id> make analitrics-nl-sql"
+	@echo "  QUESTION='pregunta...' FILE_ID=<file_id> make analitrics-agent"

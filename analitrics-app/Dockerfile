@@ -8,5 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY scripts ./scripts
 
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONWARNINGS=ignore
 
-ENTRYPOINT ["python", "scripts/nl_sql_file.py"]
+ENTRYPOINT ["python"]
+CMD ["scripts/nl_sql_file.py"]
