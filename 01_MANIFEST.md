@@ -205,6 +205,15 @@ Regla:
 - el LLM no tendrá acceso a bash libre ni a ejecución arbitraria de Python en el MVP;
 - toda acción debe pasar por herramientas con contrato explícito.
 
+Observabilidad inicial:
+
+- Arize Phoenix será la herramienta OSS inicial para visualizar traces del agente;
+- Phoenix se levantará como componente `phoenix` y expondrá UI local en `http://localhost:6006`;
+- Analitrics emitirá spans OpenTelemetry por cada paso del agente;
+- los traces deben incluir metadata operativa: `tenantId`, `file_id`, filename, estado de scope, SQL generado, cantidad de filas, estado de validación, crítica y decisión de gráfico;
+- no se deben registrar archivos completos, resultados completos, credenciales ni datos sensibles por defecto;
+- si Phoenix no está disponible, el agente debe seguir funcionando y la trazabilidad se deshabilita o falla de forma no bloqueante.
+
 Contrato de alcance:
 
 - el flujo actual se desarrollará alrededor de carga de archivos, profiling, catálogo temporal, diccionario y feedback del usuario;

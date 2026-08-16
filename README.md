@@ -17,6 +17,7 @@ El contrato rector está en [01_MANIFEST.md](./01_MANIFEST.md). Si otro document
 ```bash
 make keycloak up
 make librechat up
+make phoenix up
 make storage-metadata
 make analitrics-build
 ```
@@ -26,7 +27,10 @@ Para detener:
 ```bash
 make librechat down
 make keycloak down
+make phoenix down
 ```
+
+Phoenix queda disponible localmente en `http://localhost:6006` para revisar traces del agente.
 
 ## Alcance del MVP
 

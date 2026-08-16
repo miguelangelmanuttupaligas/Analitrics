@@ -1,0 +1,26 @@
+services:
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: analitrics-observability-phoenix
+    restart: unless-stopped
+    environment:
+      PHOENIX_HOST: 0.0.0.0
+      PHOENIX_PORT: 6006
+      PHOENIX_GRPC_PORT: 4317
+      PHOENIX_WORKING_DIR: /mnt/data
+      PHOENIX_ALLOW_EXTERNAL_RESOURCES: "false"
+    ports:
+      - "127.0.0.1:6006:6006"
+      - "127.0.0.1:4317:4317"
+    volumes:
+      - type: bind
+        source: /var/analitrics/observability/phoenix
+        target: /mnt/data
+    networks:
+      network-analitrics:
+        aliases:
+          - phoenix
+
+networks:
+  network-analitrics:
+    external: true

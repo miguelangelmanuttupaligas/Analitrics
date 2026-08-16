@@ -1,11 +1,11 @@
 SHELL := /usr/bin/env bash
 
-STACKS := keycloak librechat
+STACKS := keycloak librechat phoenix
 STACK := $(firstword $(filter $(STACKS),$(MAKECMDGOALS)))
 
-.PHONY: keycloak librechat up down storage-metadata analitrics-build analitrics-profile analitrics-nl-sql analitrics-agent prepare-dirs ensure-network cleanup-network help
+.PHONY: keycloak librechat phoenix up down storage-metadata analitrics-build analitrics-profile analitrics-nl-sql analitrics-agent prepare-dirs ensure-network cleanup-network help
 
-keycloak librechat:
+keycloak librechat phoenix:
 	@:
 
 up down:
@@ -16,9 +16,15 @@ up down:
 	@case "$(STACK)" in \
 		keycloak) compose_dir="keycloak" ;; \
 		librechat) compose_dir="librechat-src" ;; \
+		phoenix) compose_dir="phoenix" ;; \
 	esac; \
 	case "$@" in \
-		up) $(MAKE) --no-print-directory prepare-dirs ensure-network && docker compose --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" up -d --remove-orphans ;; \
+		up) if [[ "$(STACK)" == "phoenix" ]]; then \
+				$(MAKE) --no-print-directory ensure-network; \
+			else \
+				$(MAKE) --no-print-directory prepare-dirs ensure-network; \
+			fi; \
+			docker compose --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" up -d --remove-orphans ;; \
 		down) docker compose --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" down --remove-orphans; $(MAKE) --no-print-directory cleanup-network ;; \
 	esac
 
@@ -81,6 +87,9 @@ analitrics-agent:
 		-e MONGO_DB=LibreChat \
 		-e AWS_ENDPOINT_URL=http://storage-rustfs:9000 \
 		-e AWS_BUCKET_NAME="$${RUSTFS_BUCKET_NAME:-librechat}" \
+		-e ANALITRICS_TRACING_ENABLED="$${ANALITRICS_TRACING_ENABLED:-true}" \
+		-e OTEL_EXPORTER_OTLP_ENDPOINT="$${OTEL_EXPORTER_OTLP_ENDPOINT:-http://phoenix:4317}" \
+		-e PHOENIX_PROJECT_NAME="$${PHOENIX_PROJECT_NAME:-analitrics-mvp}" \
 		analitrics-app:local scripts/agent_file.py $${FILE_ID:+--file-id "$$FILE_ID"} $${FILENAME:+--filename "$$FILENAME"} --question "$$QUESTION"
 
 prepare-dirs:
@@ -98,6 +107,7 @@ prepare-dirs:
 		/var/analitrics/storage/logs \
 		/var/analitrics/keycloak/postgresql \
 		/var/analitrics/keycloak/certs \
+		/var/analitrics/observability/phoenix \
 	); \
 	for dir in "$${dirs[@]}"; do \
 		if [[ ! -d "$$dir" ]]; then needs_mkdir=1; break; fi; \
@@ -106,6 +116,7 @@ prepare-dirs:
 		sudo mkdir -p /var/analitrics/librechat/{mongodb,vectordb,uploads,logs,skill,data,images,certs}; \
 		sudo mkdir -p /var/analitrics/storage/{data,logs}; \
 		sudo mkdir -p /var/analitrics/keycloak/{postgresql,certs}; \
+		sudo mkdir -p /var/analitrics/observability/phoenix; \
 	fi; \
 	for dir in "$${dirs[@]}"; do \
 		test -d "$$dir"; \
@@ -127,6 +138,7 @@ help:
 	@echo "Usage:"
 	@echo "  make keycloak up|down"
 	@echo "  make librechat up|down"
+	@echo "  make phoenix up|down"
 	@echo "  make storage-metadata"
 	@echo "  make analitrics-build"
 	@echo "  FILE_ID=<file_id> make analitrics-profile"
