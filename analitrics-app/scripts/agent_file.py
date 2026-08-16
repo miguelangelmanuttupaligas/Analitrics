@@ -7,11 +7,15 @@ import socket
 import tempfile
 import warnings
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Any, Literal, TypedDict
 
 import duckdb
+import pandas as pd
+import sqlglot
+from sqlglot import exp
 
 warnings.filterwarnings("ignore", message=r"The default value of `allowed_objects`.*")
 
@@ -36,6 +40,7 @@ from opentelemetry.trace import Status, StatusCode
 from nl_sql_file import (
     FileMetadata,
     compose_answer,
+    connect_mongo,
     critique_answer,
     download_from_rustfs,
     env,
@@ -65,6 +70,9 @@ class AgentState(TypedDict, total=False):
     answer: str
     critic: dict[str, Any]
     chart_spec: dict[str, Any]
+    analysis_session_id: str
+    cache_path: str
+    cache_hits: int
     error: str
 
 
@@ -139,6 +147,17 @@ def set_span_attrs(span: Any, attrs: dict[str, Any]) -> None:
             span.set_attribute(key, compact_json(value))
 
 
+def profiles_for_storage(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    persist_previews = bool_env("ANALITRICS_PERSIST_PREVIEWS", False)
+    stored_profiles: list[dict[str, Any]] = []
+    for profile in profiles:
+        stored = {key: value for key, value in profile.items() if key != "sample"}
+        if persist_previews:
+            stored["sample"] = profile.get("sample", [])[:3]
+        stored_profiles.append(stored)
+    return stored_profiles
+
+
 def csv_list(value: str | None) -> list[str]:
     if not value:
         return []
@@ -150,6 +169,58 @@ def arg_values(args: argparse.Namespace, attr: str) -> list[str]:
     if isinstance(values, str):
         return [values]
     return list(values)
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def sanitize_path_segment(value: str, fallback: str) -> str:
+    sanitized = normalize_identifier(value, fallback)
+    return sanitized or fallback
+
+
+def get_mongo_db():
+    mongo = connect_mongo()
+    return mongo[env("MONGO_DB", "LibreChat")]
+
+
+def get_analysis_session_id(args: argparse.Namespace) -> str | None:
+    return args.analysis_session_id or args.conversation_id
+
+
+def get_cache_path(args: argparse.Namespace, analysis_session_id: str | None) -> Path | None:
+    if not analysis_session_id:
+        return None
+    tenant = sanitize_path_segment(args.tenant_id, "tenant")
+    session = sanitize_path_segment(analysis_session_id, "session")
+    return Path(args.cache_dir) / tenant / f"{session}.duckdb"
+
+
+def file_signature(metadata: FileMetadata) -> str:
+    return "|".join(
+        [
+            metadata.file_id,
+            metadata.storage_key,
+            str(metadata.bytes),
+            metadata.mime_type,
+        ]
+    )
+
+
+def existing_tables(con: duckdb.DuckDBPyConnection) -> set[str]:
+    try:
+        return {str(row[0]) for row in con.execute("show tables").fetchall()}
+    except Exception:
+        return set()
+
+
+def load_cached_session(args: argparse.Namespace, analysis_session_id: str | None) -> dict[str, Any] | None:
+    if not analysis_session_id:
+        return None
+    return get_mongo_db().analitrics_analysis_sessions.find_one(
+        {"tenantId": args.tenant_id, "analysisSessionId": analysis_session_id}
+    )
 
 
 def resolve_files(args: argparse.Namespace) -> list[FileMetadata]:
@@ -189,13 +260,39 @@ def table_name_for_file(metadata: FileMetadata, table: str) -> str:
 def load_files_into_duckdb(
     files: list[FileMetadata],
     tmpdir: tempfile.TemporaryDirectory[str],
-) -> tuple[duckdb.DuckDBPyConnection, list[str], list[str], dict[str, list[str]]]:
-    con = duckdb.connect(database=":memory:")
+    args: argparse.Namespace,
+) -> tuple[duckdb.DuckDBPyConnection, list[str], list[str], dict[str, list[str]], int, Path | None]:
+    analysis_session_id = get_analysis_session_id(args)
+    cache_path = get_cache_path(args, analysis_session_id)
+    cache_exists = cache_path.exists() if cache_path else False
+    if cache_path:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        con = duckdb.connect(database=str(cache_path))
+    else:
+        con = duckdb.connect(database=":memory:")
+
+    session_doc = load_cached_session(args, analysis_session_id) if cache_exists else None
+    processed_by_signature = {
+        str(item.get("signature")): item
+        for item in (session_doc or {}).get("processedFiles", [])
+        if item.get("signature")
+    }
+    available_tables = existing_tables(con)
     all_tables: list[str] = []
     local_paths: list[str] = []
     table_map: dict[str, list[str]] = {}
+    cache_hits = 0
 
     for metadata in files:
+        signature = file_signature(metadata)
+        cached = processed_by_signature.get(signature)
+        cached_tables = [str(table) for table in (cached or {}).get("tables", [])]
+        if cached_tables and all(table in available_tables for table in cached_tables):
+            table_map[metadata.file_id] = cached_tables
+            all_tables.extend(cached_tables)
+            cache_hits += 1
+            continue
+
         file_dir = Path(tmpdir.name) / metadata.file_id
         file_dir.mkdir(parents=True, exist_ok=True)
         local_path = download_from_rustfs(metadata, file_dir)
@@ -216,8 +313,68 @@ def load_files_into_duckdb(
             renamed_tables.append(final_table)
             all_tables.append(final_table)
         table_map[metadata.file_id] = renamed_tables
+        available_tables.update(renamed_tables)
 
-    return con, all_tables, local_paths, table_map
+    return con, all_tables, local_paths, table_map, cache_hits, cache_path
+
+
+def persist_analysis_session(
+    args: argparse.Namespace,
+    files: list[FileMetadata],
+    profiles: list[dict[str, Any]],
+    table_map: dict[str, list[str]],
+    cache_path: Path | None,
+    cache_hits: int,
+) -> None:
+    analysis_session_id = get_analysis_session_id(args)
+    if not analysis_session_id:
+        return
+
+    now = utc_now()
+    processed_files = []
+    for metadata in files:
+        processed_files.append(
+            {
+                "file_id": metadata.file_id,
+                "filename": metadata.filename,
+                "storageKey": metadata.storage_key,
+                "mimeType": metadata.mime_type,
+                "bytes": metadata.bytes,
+                "signature": file_signature(metadata),
+                "tables": table_map.get(metadata.file_id, []),
+                "processedAt": now,
+            }
+        )
+
+    db = get_mongo_db()
+    db.analitrics_analysis_sessions.update_one(
+        {"tenantId": args.tenant_id, "analysisSessionId": analysis_session_id},
+        {
+            "$set": {
+                "tenantId": args.tenant_id,
+                "userId": args.user_id,
+                "conversationId": args.conversation_id,
+                "analysisSessionId": analysis_session_id,
+                "cachePath": str(cache_path) if cache_path else None,
+                "files": [asdict(metadata) for metadata in files],
+                "profiles": profiles_for_storage(profiles),
+                "tableMap": table_map,
+                "lastCacheHits": cache_hits,
+                "updatedAt": now,
+            },
+            "$setOnInsert": {"createdAt": now},
+        },
+        upsert=True,
+    )
+    for processed_file in processed_files:
+        db.analitrics_analysis_sessions.update_one(
+            {"tenantId": args.tenant_id, "analysisSessionId": analysis_session_id},
+            {"$pull": {"processedFiles": {"file_id": processed_file["file_id"]}}},
+        )
+        db.analitrics_analysis_sessions.update_one(
+            {"tenantId": args.tenant_id, "analysisSessionId": analysis_session_id},
+            {"$push": {"processedFiles": processed_file}},
+        )
 
 
 def combined_schema_prompt(files: list[FileMetadata], profiles: list[dict[str, Any]]) -> str:
@@ -276,6 +433,47 @@ def enrich_profiles_with_file_context(
     return enriched
 
 
+def materialize_catalog_table(con: duckdb.DuckDBPyConnection, profiles: list[dict[str, Any]]) -> dict[str, Any]:
+    rows = [
+        {
+            "table_name": profile["table"],
+            "source_file_id": profile.get("source_file_id"),
+            "source_filename": profile.get("source_filename"),
+            "row_count": int(profile.get("row_count") or 0),
+            "column_count": len(profile.get("columns") or []),
+        }
+        for profile in profiles
+    ]
+    df = pd.DataFrame(rows)
+    con.register("_catalog_df", df)
+    con.execute('create or replace table "__analitrics_catalog" as select * from _catalog_df')
+    con.unregister("_catalog_df")
+    return {
+        "table": "__analitrics_catalog",
+        "row_count": len(rows),
+        "columns": [
+            {"name": "table_name", "type": "VARCHAR"},
+            {"name": "source_file_id", "type": "VARCHAR"},
+            {"name": "source_filename", "type": "VARCHAR"},
+            {"name": "row_count", "type": "BIGINT"},
+            {"name": "column_count", "type": "BIGINT"},
+        ],
+        "sample": rows[:20],
+        "source_file_id": None,
+        "source_filename": None,
+        "system_table": True,
+    }
+
+
+def validate_known_tables(sql: str, known_tables: list[str]) -> None:
+    allowed = set(known_tables)
+    expressions = sqlglot.parse(sql, read="duckdb")
+    used_tables = {table.name for expression in expressions for table in expression.find_all(exp.Table)}
+    unknown = sorted(table for table in used_tables if table not in allowed)
+    if unknown:
+        raise RuntimeError(f"SQL references unavailable tables: {unknown}. Available tables: {sorted(allowed)}")
+
+
 def llm_json(system: str, payload: dict[str, Any], model_env: str, default_model: str) -> dict[str, Any]:
     model = env(model_env, env("ANALITRICS_NL_SQL_MODEL", default_model))
     with TRACER.start_as_current_span("llm_json") as span:
@@ -310,14 +508,25 @@ def resolve_and_profile(state: AgentState) -> AgentState:
         args = state["args"]
         tmpdir = tempfile.TemporaryDirectory(prefix="analitrics-agent-")
         files = resolve_files(args)
-        con, tables, local_paths, table_map = load_files_into_duckdb(files, tmpdir)
+        con, tables, local_paths, table_map, cache_hits, cache_path = load_files_into_duckdb(files, tmpdir, args)
         profiles = enrich_profiles_with_file_context(files, profile_tables(con, tables, args.sample_rows), table_map)
+        catalog_profile = materialize_catalog_table(con, profiles)
+        profiles = [*profiles, catalog_profile]
+        tables = [*tables, "__analitrics_catalog"]
+        persist_analysis_session(args, files, profiles, table_map, cache_path, cache_hits)
         RUNTIME["tmpdir"] = tmpdir
         RUNTIME["con"] = con
+        analysis_session_id = get_analysis_session_id(args)
         set_span_attrs(
             span,
             {
                 "analitrics.tenant_id": args.tenant_id,
+                "analitrics.user_id": args.user_id,
+                "analitrics.conversation_id": args.conversation_id,
+                "analitrics.message_id": args.message_id,
+                "analitrics.analysis_session_id": analysis_session_id,
+                "analitrics.cache_path": str(cache_path) if cache_path else None,
+                "analitrics.cache_hits": cache_hits,
                 "analitrics.file_ids": [metadata.file_id for metadata in files],
                 "analitrics.filenames": [metadata.filename for metadata in files],
                 "analitrics.bytes_total": sum(metadata.bytes for metadata in files),
@@ -331,10 +540,13 @@ def resolve_and_profile(state: AgentState) -> AgentState:
             **state,
             "metadata": files[0],
             "files": files,
-            "local_path": local_paths[0],
+            "local_path": local_paths[0] if local_paths else "",
             "local_paths": local_paths,
             "tables": tables,
             "profiles": profiles,
+            "analysis_session_id": analysis_session_id or "",
+            "cache_path": str(cache_path) if cache_path else "",
+            "cache_hits": cache_hits,
         }
 
 
@@ -379,6 +591,8 @@ def generate_sql_node(state: AgentState) -> AgentState:
             system=(
                 "Eres un analista de datos. Genera SQL DuckDB de solo lectura para responder "
                 "la pregunta del usuario usando exclusivamente las tablas disponibles. "
+                "Para preguntas sobre tablas disponibles, archivo origen, conteos de filas o cantidad de columnas, "
+                "usa la tabla técnica \"__analitrics_catalog\". "
                 "Puede haber múltiples archivos y múltiples hojas; cruza tablas solo si la pregunta lo requiere "
                 "y si los nombres/columnas lo sustentan. Responde JSON con keys: sql, rationale. "
                 "No uses INSERT, UPDATE, DELETE, CREATE, DROP, COPY, ATTACH, INSTALL, LOAD, PRAGMA ni llamadas externas. "
@@ -401,6 +615,8 @@ def repair_sql(state: AgentState, error: str) -> dict[str, str]:
         system=(
             "Repara SQL DuckDB de solo lectura que falló validación o EXPLAIN. "
             "Devuelve JSON con keys: sql, rationale. Usa únicamente tablas/columnas disponibles. "
+            "Para preguntas sobre tablas disponibles, archivo origen, conteos de filas o cantidad de columnas, "
+            "usa la tabla técnica \"__analitrics_catalog\". "
             "Cita nombres de tabla con comillas dobles. Evita aliases reservados como table; usa table_name. "
             "No uses INSERT, UPDATE, DELETE, CREATE, DROP, COPY, ATTACH, INSTALL, LOAD, PRAGMA ni llamadas externas."
         ),
@@ -423,6 +639,7 @@ def validate_sql_node(state: AgentState) -> AgentState:
         for attempt in range(2):
             try:
                 validate_select_sql(sql)
+                validate_known_tables(sql, state["tables"])
                 con.execute(f"explain {sql}").fetchall()
                 set_span_attrs(
                     span,
@@ -533,6 +750,43 @@ def cleanup_runtime() -> None:
         tmpdir.cleanup()
 
 
+def persist_agent_run(args: argparse.Namespace, result: AgentState | None, error: str | None = None) -> None:
+    analysis_session_id = get_analysis_session_id(args)
+    now = utc_now()
+    doc: dict[str, Any] = {
+        "tenantId": args.tenant_id,
+        "userId": args.user_id,
+        "conversationId": args.conversation_id,
+        "messageId": args.message_id,
+        "analysisSessionId": analysis_session_id,
+        "question": args.question,
+        "status": "error" if error else "ok",
+        "error": error,
+        "createdAt": now,
+    }
+    if result:
+        files = result.get("files") or []
+        doc.update(
+            {
+                "inScope": result.get("in_scope"),
+                "scopeReason": result.get("scope_reason"),
+                "fileIds": [metadata.file_id for metadata in files],
+                "filenames": [metadata.filename for metadata in files],
+                "tables": profiles_for_storage(result.get("profiles") or []),
+                "sql": result.get("sql"),
+                "rowCount": len(result.get("rows") or []),
+                "answer": result.get("answer"),
+                "critic": result.get("critic"),
+                "chartSpec": result.get("chart_spec"),
+                "cachePath": result.get("cache_path"),
+                "cacheHits": result.get("cache_hits"),
+            }
+        )
+        if bool_env("ANALITRICS_PERSIST_PREVIEWS", False):
+            doc["rowsPreview"] = (result.get("rows") or [])[:20]
+    get_mongo_db().analitrics_agent_runs.insert_one(doc)
+
+
 def build_graph():
     graph = StateGraph(AgentState)
     graph.add_node("resolve_and_profile", resolve_and_profile)
@@ -563,6 +817,7 @@ def build_graph():
 def run(args: argparse.Namespace) -> None:
     setup_tracing(args)
     app = build_graph()
+    result: AgentState | None = None
     try:
         with TRACER.start_as_current_span("analitrics_agent_run") as span:
             set_span_attrs(
@@ -570,6 +825,10 @@ def run(args: argparse.Namespace) -> None:
                 {
                     "analitrics.question": args.question,
                     "analitrics.tenant_id": args.tenant_id,
+                    "analitrics.user_id": args.user_id,
+                    "analitrics.conversation_id": args.conversation_id,
+                    "analitrics.message_id": args.message_id,
+                    "analitrics.analysis_session_id": get_analysis_session_id(args),
                     "analitrics.file_id_arg": args.file_id,
                     "analitrics.file_ids_arg": args.file_ids,
                     "analitrics.filename_arg": args.filename,
@@ -588,10 +847,18 @@ def run(args: argparse.Namespace) -> None:
                     else None,
                 },
             )
+        persist_agent_run(args, result)
         metadata = result.get("metadata")
         files = result.get("files") or []
         output = {
             "agent": "langgraph-file-analyst",
+            "tenantId": args.tenant_id,
+            "userId": args.user_id,
+            "conversationId": args.conversation_id,
+            "messageId": args.message_id,
+            "analysisSessionId": result.get("analysis_session_id"),
+            "cachePath": result.get("cache_path"),
+            "cacheHits": result.get("cache_hits"),
             "in_scope": result.get("in_scope"),
             "scope_reason": result.get("scope_reason"),
             "file": metadata.__dict__ if metadata else None,
@@ -606,6 +873,9 @@ def run(args: argparse.Namespace) -> None:
             "chart_spec": result.get("chart_spec"),
         }
         print(json.dumps(output, ensure_ascii=False, indent=2))
+    except Exception as exc:
+        persist_agent_run(args, result, error=str(exc))
+        raise
     finally:
         cleanup_runtime()
         shutdown_tracing()
@@ -618,6 +888,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--file-ids", help="Comma-separated LibreChat file_ids.")
     parser.add_argument("--filenames", help="Comma-separated LibreChat filenames.")
     parser.add_argument("--tenant-id", default="analitrics")
+    parser.add_argument("--user-id")
+    parser.add_argument("--conversation-id")
+    parser.add_argument("--message-id")
+    parser.add_argument("--analysis-session-id")
+    parser.add_argument("--cache-dir", default="/var/analitrics/analytics/cache")
     parser.add_argument("--question", required=True)
     parser.add_argument("--sample-rows", type=int, default=5)
     return parser.parse_args()

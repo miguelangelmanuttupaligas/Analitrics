@@ -287,6 +287,14 @@ Retención:
 - debe existir una política para expirar sesiones analíticas antiguas sin borrar los archivos originales de RustFS;
 - borrar o expirar una cache DuckDB debe forzar reprocesamiento desde RustFS, no pérdida de datos fuente.
 
+Implementación MVP actual:
+
+- `analitrics-app/scripts/agent_file.py` acepta `tenantId`, `userId`, `conversationId`, `messageId` y `analysisSessionId` como argumentos operativos;
+- si existe `analysisSessionId` o `conversationId`, el agente crea o reutiliza una cache DuckDB bajo `/var/analitrics/analytics/cache/<tenant>/<session>.duckdb`;
+- MongoDB se usa temporalmente para guardar metadata de sesión en `analitrics_analysis_sessions` y auditoría de corridas en `analitrics_agent_runs`;
+- esta persistencia en MongoDB es una solución MVP local, no el control plane definitivo;
+- los archivos originales siguen viviendo en RustFS y la cache DuckDB debe poder reconstruirse desde esos objetos.
+
 Separación futura explícita:
 
 - RustFS será la fuente persistente de archivos originales cargados por usuarios: CSV, XLS, XLSX, diccionarios, catálogos u otros adjuntos;
