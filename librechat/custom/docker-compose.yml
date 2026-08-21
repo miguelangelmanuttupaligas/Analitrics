@@ -175,6 +175,8 @@ services:
     container_name: analitrics-analitrics-control-postgres
     image: postgres:16-alpine
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:${ANALITRICS_POSTGRES_HOST_PORT:-55432}:5432"
     environment:
       POSTGRES_DB: ${ANALITRICS_POSTGRES_DB:-analitrics}
       POSTGRES_USER: ${ANALITRICS_POSTGRES_ADMIN_USER:-analitrics}
@@ -201,11 +203,14 @@ services:
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_ACCESS_KEY:?RUSTFS_SECRET_ACCESS_KEY is required}
       RUSTFS_ADDRESS: :9000
       RUSTFS_CONSOLE_ADDRESS: :9001
-      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_CONSOLE_ENABLE: "true"
       RUSTFS_OBS_LOGGER_LEVEL: error
       RUSTFS_OBS_LOG_DIRECTORY: /var/log/rustfs/
+    ports:
+      - "127.0.0.1:${RUSTFS_CONSOLE_HOST_PORT:-9001}:9001"
     expose:
       - "9000"
+      - "9001"
     volumes:
       - volume-analitrics-librechat-storage-rustfs-data:/data
       - volume-analitrics-librechat-storage-rustfs-logs:/var/log/rustfs

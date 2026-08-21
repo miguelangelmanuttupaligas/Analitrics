@@ -7,8 +7,10 @@ from typing import Any
 
 from nl_sql_file import owner_query_values
 
+from .analytics_context import BusinessSummaryBuilder, IngestionStatusBuilder
 from .control_plane import CatalogRepository, PostgresControlPlaneFactory
 from .duckdb_workspace import DuckDbTableCatalog, DuckDbWorkspaceFactory, ProfileEnricher
+from .errors import AnalitricsError
 from .file_resolver import FileResolver
 from .models import AgentRequest
 from .repositories import ConversationAttachmentRepository, MongoDatabaseFactory
@@ -66,6 +68,8 @@ class IngestValidationService:
         catalog_repository: CatalogRepository,
         file_context_builder: FileContextSummaryBuilder | None = None,
         profile_summary_builder: ProfileSummaryBuilder | None = None,
+        ingestion_status_builder: IngestionStatusBuilder | None = None,
+        business_summary_builder: BusinessSummaryBuilder | None = None,
     ) -> None:
         self._file_resolver = file_resolver
         self._workspace_factory = workspace_factory
@@ -74,6 +78,8 @@ class IngestValidationService:
         self._catalog_repository = catalog_repository
         self._file_context_builder = file_context_builder or FileContextSummaryBuilder()
         self._profile_summary_builder = profile_summary_builder or ProfileSummaryBuilder()
+        self._ingestion_status_builder = ingestion_status_builder or IngestionStatusBuilder()
+        self._business_summary_builder = business_summary_builder or BusinessSummaryBuilder()
 
     def validate(self, request: AgentRequest) -> dict[str, Any]:
         workspace = None
@@ -94,6 +100,10 @@ class IngestValidationService:
                 workspace.cache_hits,
             )
             persisted_conversation = self._catalog_repository.find_conversation(request)
+            file_summaries = self._file_context_builder.build(files, workspace.table_map, workspace.cache_hit_map)
+            profile_summaries = [self._profile_summary_builder.build(profile) for profile in profiles]
+            table_summaries = self._table_summaries(profiles)
+            business_summary = self._business_summary_builder.build(file_summaries, table_summaries)
             return {
                 "ok": True,
                 "llmUsed": False,
@@ -104,9 +114,17 @@ class IngestValidationService:
                 "messageId": request.message_id,
                 "cachePath": str(workspace.cache_path) if workspace.cache_path else None,
                 "cacheHits": workspace.cache_hits,
-                "files": self._file_context_builder.build(files, workspace.table_map, workspace.cache_hit_map),
+                "files": file_summaries,
                 "tables": tables,
-                "profiles": [self._profile_summary_builder.build(profile) for profile in profiles],
+                "profiles": profile_summaries,
+                "ingestionStatus": self._ingestion_status_builder.build(
+                    file_summaries,
+                    table_summaries,
+                    workspace.cache_hits,
+                    catalog_found=persisted_conversation is not None,
+                ),
+                "businessSummary": business_summary,
+                "qualityWarnings": business_summary["qualityWarnings"],
                 "context": {
                     "fileCount": len(files),
                     "tableCount": len(tables),
@@ -128,6 +146,31 @@ class IngestValidationService:
         finally:
             if workspace is not None:
                 workspace.close()
+
+    def error_payload(self, exc: Exception) -> dict[str, Any]:
+        if isinstance(exc, AnalitricsError):
+            error = exc.to_payload()
+        else:
+            error = {
+                "code": "analitrics_unhandled_error",
+                "message": str(exc),
+                "userMessage": "No se pudo completar la validación de ingesta.",
+                "recoverable": True,
+            }
+        return {"ok": False, "llmUsed": False, "error": error}
+
+    def _table_summaries(self, profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "table": profile.get("table"),
+                "sourceFileId": profile.get("source_file_id"),
+                "sourceFilename": profile.get("source_filename"),
+                "rowCount": int(profile.get("row_count") or 0),
+                "columns": profile.get("columns") or [],
+                "systemTable": bool(profile.get("system_table")),
+            }
+            for profile in profiles
+        ]
 
     def invalidate_file(self, tenant_id: str, user_id: str, file_id: str, reason: str) -> int:
         return self._catalog_repository.invalidate_file(tenant_id, user_id, file_id, reason)

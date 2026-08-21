@@ -131,6 +131,35 @@ make librechat up
 
 `make librechat up` prepara directorios, red Docker, storage, MongoDB, Postgres de control plane, agente analitico, gateway y LibreChat.
 
+## Servicios administrativos por localhost
+
+Los servicios de administracion/diagnostico no deben publicarse en `0.0.0.0`. Para poder accederlos por tunel SSH desde la VM, quedan publicados solo en `127.0.0.1`:
+
+```text
+Postgres control plane: 127.0.0.1:55432 -> control-postgres:5432
+Phoenix UI:            127.0.0.1:6006  -> phoenix:6006
+Phoenix OTLP/gRPC:     127.0.0.1:4317  -> phoenix:4317
+RustFS Console:        127.0.0.1:9001  -> storage-rustfs:9001/rustfs/console/
+```
+
+Ejemplos de tunel desde tu maquina local hacia la VM:
+
+```bash
+ssh -L 6006:127.0.0.1:6006 usuario@IP_PUBLICA_VM
+ssh -L 9001:127.0.0.1:9001 usuario@IP_PUBLICA_VM
+ssh -L 55432:127.0.0.1:55432 usuario@IP_PUBLICA_VM
+```
+
+URLs locales despues del tunel:
+
+```text
+Phoenix:        http://127.0.0.1:6006
+RustFS Console: http://127.0.0.1:9001/rustfs/console/
+Postgres:       127.0.0.1:55432
+```
+
+El `gateway` si debe quedar publico en produccion, porque es la entrada HTTPS de `https://analitrics.com`.
+
 ## Configuracion inicial
 
 1. Entrar a `https://analitrics.com/auth/admin/`.

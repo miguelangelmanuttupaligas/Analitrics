@@ -11,6 +11,7 @@ from psycopg.rows import dict_row
 
 from nl_sql_file import FileMetadata
 
+from .analytics_context import BusinessSummaryBuilder, IngestionStatusBuilder
 from .config import bool_env, env
 from .json_utils import profiles_for_storage
 from .models import AgentRequest
@@ -36,6 +37,8 @@ class PostgresControlPlaneFactory:
 class CatalogRepository:
     def __init__(self, connection_factory: PostgresControlPlaneFactory) -> None:
         self._connection_factory = connection_factory
+        self._ingestion_status_builder = IngestionStatusBuilder()
+        self._business_summary_builder = BusinessSummaryBuilder()
 
     def find_conversation(self, request: AgentRequest) -> dict[str, Any] | None:
         if not request.conversation_id:
@@ -109,6 +112,9 @@ class CatalogRepository:
                         "rowCountTotal": 0,
                         "cachePath": None,
                     },
+                    "ingestionStatus": self._ingestion_status_builder.build([], [], None, catalog_found=False),
+                    "businessSummary": self._business_summary_builder.build([], []),
+                    "qualityWarnings": [],
                 }
 
             profile_rows = con.execute(
@@ -145,6 +151,20 @@ class CatalogRepository:
         ]
         files = conversation["processed_files"] or conversation["files"] or []
         data_tables = [table for table in tables if not table["systemTable"]]
+        feedback = [
+            {
+                "feedbackId": str(row["feedback_id"]),
+                "sourceFileId": row["source_file_id"],
+                "sourceFilename": row["source_filename"],
+                "step": int(row["step"]),
+                "label": row["label"],
+                "content": row["content"],
+                "createdAt": row["created_at"].isoformat() if row["created_at"] else None,
+                "updatedAt": row["updated_at"].isoformat() if row["updated_at"] else None,
+            }
+            for row in feedback_rows
+        ]
+        business_summary = self._business_summary_builder.build(files, tables, feedback)
         return {
             "found": True,
             "tenantId": conversation["tenant_id"],
@@ -157,19 +177,15 @@ class CatalogRepository:
             "files": files,
             "tables": tables,
             "profiles": profiles,
-            "feedback": [
-                {
-                    "feedbackId": str(row["feedback_id"]),
-                    "sourceFileId": row["source_file_id"],
-                    "sourceFilename": row["source_filename"],
-                    "step": int(row["step"]),
-                    "label": row["label"],
-                    "content": row["content"],
-                    "createdAt": row["created_at"].isoformat() if row["created_at"] else None,
-                    "updatedAt": row["updated_at"].isoformat() if row["updated_at"] else None,
-                }
-                for row in feedback_rows
-            ],
+            "feedback": feedback,
+            "ingestionStatus": self._ingestion_status_builder.build(
+                files,
+                tables,
+                conversation["last_cache_hits"],
+                catalog_found=True,
+            ),
+            "businessSummary": business_summary,
+            "qualityWarnings": business_summary["qualityWarnings"],
             "summary": {
                 "fileCount": len(files),
                 "tableCount": len(data_tables),

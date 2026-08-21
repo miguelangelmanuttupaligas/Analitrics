@@ -83,15 +83,16 @@ class AgentHttpHandler(BaseHTTPRequestHandler):
             self._send_json(422, {"error": str(exc)})
 
     def _handle_ingest_validate(self) -> None:
+        service = IngestValidationFactory.get_service()
         try:
             payload = self._read_json()
             request = self._request_from_payload(payload)
-            result = IngestValidationFactory.get_service().validate(request)
+            result = service.validate(request)
             self._send_json(200, result)
         except Exception as exc:
             if bool_env("ANALITRICS_DEBUG_ERRORS", False):
                 raise
-            self._send_json(422, {"ok": False, "llmUsed": False, "error": str(exc)})
+            self._send_json(422, service.error_payload(exc))
 
     def _handle_file_invalidate(self) -> None:
         try:

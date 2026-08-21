@@ -179,61 +179,70 @@ class DuckDbWorkspaceFactory:
         tmpdir = tempfile.TemporaryDirectory(prefix="analitrics-agent-")
         cache_path = self._cache_path_resolver.resolve(request)
         cache_lock = CacheLock(cache_path.with_suffix(".lock")) if cache_path else None
-        if cache_lock:
-            cache_lock.acquire()
-        cache_exists = cache_path.exists() if cache_path else False
-        if cache_path:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            con = duckdb.connect(database=str(cache_path))
-        else:
-            con = duckdb.connect(database=":memory:")
+        con: duckdb.DuckDBPyConnection | None = None
+        try:
+            if cache_lock:
+                cache_lock.acquire()
+            cache_exists = cache_path.exists() if cache_path else False
+            if cache_path:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                con = duckdb.connect(database=str(cache_path))
+            else:
+                con = duckdb.connect(database=":memory:")
 
-        conversation_doc = self._catalog_repository.find_conversation(request) if cache_exists else None
-        processed_by_signature = {
-            str(item.get("signature")): item
-            for item in (conversation_doc or {}).get("processedFiles", [])
-            if item.get("signature")
-        }
-        available_tables = self._table_catalog.existing_tables(con)
-        all_tables: list[str] = []
-        local_paths: list[str] = []
-        table_map: dict[str, list[str]] = {}
-        cache_hit_map: dict[str, bool] = {}
-        cache_hits = 0
+            conversation_doc = self._catalog_repository.find_conversation(request) if cache_exists else None
+            processed_by_signature = {
+                str(item.get("signature")): item
+                for item in (conversation_doc or {}).get("processedFiles", [])
+                if item.get("signature")
+            }
+            available_tables = self._table_catalog.existing_tables(con)
+            all_tables: list[str] = []
+            local_paths: list[str] = []
+            table_map: dict[str, list[str]] = {}
+            cache_hit_map: dict[str, bool] = {}
+            cache_hits = 0
 
-        for metadata in files:
-            file_dir = Path(tmpdir.name) / metadata.file_id
-            file_dir.mkdir(parents=True, exist_ok=True)
-            local_path = download_from_rustfs(metadata, file_dir)
-            metadata.content_hash = self._content_hasher.hash_path(local_path)
+            for metadata in files:
+                file_dir = Path(tmpdir.name) / metadata.file_id
+                file_dir.mkdir(parents=True, exist_ok=True)
+                local_path = download_from_rustfs(metadata, file_dir)
+                metadata.content_hash = self._content_hasher.hash_path(local_path)
 
-            signature = self._signature_builder.build(metadata)
-            cached = processed_by_signature.get(signature)
-            cached_tables = [str(table) for table in (cached or {}).get("tables", [])]
-            if cached_tables and all(table in available_tables for table in cached_tables):
-                table_map[metadata.file_id] = cached_tables
-                all_tables.extend(cached_tables)
-                cache_hit_map[metadata.file_id] = True
-                cache_hits += 1
-                continue
+                signature = self._signature_builder.build(metadata)
+                cached = processed_by_signature.get(signature)
+                cached_tables = [str(table) for table in (cached or {}).get("tables", [])]
+                if cached_tables and all(table in available_tables for table in cached_tables):
+                    table_map[metadata.file_id] = cached_tables
+                    all_tables.extend(cached_tables)
+                    cache_hit_map[metadata.file_id] = True
+                    cache_hits += 1
+                    continue
 
-            local_paths.append(str(local_path))
-            cache_hit_map[metadata.file_id] = False
+                local_paths.append(str(local_path))
+                cache_hit_map[metadata.file_id] = False
 
-            raw_tables = self._load_tables(con, local_path, metadata)
+                raw_tables = self._load_tables(con, local_path, metadata)
 
-            renamed_tables: list[str] = []
-            for raw_table in raw_tables:
-                final_table = table_name_for_file(metadata, raw_table)
-                if final_table != raw_table:
-                    con.execute(f'create or replace table "{final_table}" as select * from "{raw_table}"')
-                    con.execute(f'drop table "{raw_table}"')
-                renamed_tables.append(final_table)
-                all_tables.append(final_table)
-            table_map[metadata.file_id] = renamed_tables
-            available_tables.update(renamed_tables)
+                renamed_tables: list[str] = []
+                for raw_table in raw_tables:
+                    final_table = table_name_for_file(metadata, raw_table)
+                    if final_table != raw_table:
+                        con.execute(f'create or replace table "{final_table}" as select * from "{raw_table}"')
+                        con.execute(f'drop table "{raw_table}"')
+                    renamed_tables.append(final_table)
+                    all_tables.append(final_table)
+                table_map[metadata.file_id] = renamed_tables
+                available_tables.update(renamed_tables)
 
-        return DuckDbWorkspace(con, all_tables, local_paths, table_map, cache_hit_map, cache_hits, cache_path, tmpdir, cache_lock)
+            return DuckDbWorkspace(con, all_tables, local_paths, table_map, cache_hit_map, cache_hits, cache_path, tmpdir, cache_lock)
+        except Exception:
+            if con is not None:
+                con.close()
+            tmpdir.cleanup()
+            if cache_lock is not None:
+                cache_lock.release()
+            raise
 
     def profile(self, workspace: DuckDbWorkspace, sample_rows: int) -> list[dict[str, Any]]:
         return profile_tables(workspace.connection, workspace.tables, sample_rows)

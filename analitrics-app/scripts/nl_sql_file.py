@@ -206,11 +206,35 @@ def profile_tables(con: duckdb.DuckDBPyConnection, tables: list[str], sample_row
         columns = con.execute(f'describe "{table}"').fetchall()
         row_count = con.execute(f'select count(*) from "{table}"').fetchone()[0]
         sample = con.execute(f'select * from "{table}" limit ?', [sample_rows]).fetchdf()
+        column_profiles: list[dict[str, Any]] = []
+        for row in columns:
+            column_name = str(row[0])
+            column_type = str(row[1])
+            quoted = column_name.replace('"', '""')
+            null_count = con.execute(f'select count(*) from "{table}" where "{quoted}" is null').fetchone()[0]
+            try:
+                distinct_count = con.execute(f'select approx_count_distinct("{quoted}") from "{table}"').fetchone()[0]
+            except Exception:
+                distinct_count = None
+            sample_values = con.execute(
+                f'select distinct "{quoted}" from "{table}" where "{quoted}" is not null limit ?',
+                [min(sample_rows, 5)],
+            ).fetchdf()
+            column_profiles.append(
+                {
+                    "name": column_name,
+                    "type": column_type,
+                    "null_count": int(null_count or 0),
+                    "null_ratio": float(null_count / row_count) if row_count else 0.0,
+                    "distinct_count": int(distinct_count) if distinct_count is not None else None,
+                    "sample_values": json.loads(sample_values.to_json(orient="records", date_format="iso")),
+                }
+            )
         profiles.append(
             {
                 "table": table,
                 "row_count": row_count,
-                "columns": [{"name": row[0], "type": row[1]} for row in columns],
+                "columns": column_profiles,
                 "sample": json.loads(sample.to_json(orient="records", date_format="iso")),
             }
         )
