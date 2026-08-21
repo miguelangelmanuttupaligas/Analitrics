@@ -6,7 +6,8 @@ El contrato rector está en [01_MANIFEST.md](./01_MANIFEST.md). Si otro document
 
 ## Estructura activa
 
-- `librechat-src/`: runtime y configuración de LibreChat, gateway, RustFS y dependencias del chat.
+- `librechat/fork/`: código fuente upstream de LibreChat para cambios React controlados.
+- `librechat/custom/`: runtime, configuración, gateway, RustFS y parches de transición de Analitrics sobre LibreChat.
 - `keycloak/`: SSO, realm y theme Analitrics.
 - `analitrics-adapter/`: wrappers/proxies mínimos cerca de LibreChat.
 - `analitrics-app/`: lógica analítica Python, DuckDB, profiling y NL-SQL.
@@ -46,4 +47,4 @@ Queda fuera del MVP:
 - conectar bases de datos empresariales externas;
 - crear MCP servers productivos;
 - mezclar catálogos de archivos con catálogos de bases de datos;
-- mantener un fork fuente de LibreChat sin una decisión explícita.
+- migrar catálogos de archivos hacia catálogos de bases de datos externas.

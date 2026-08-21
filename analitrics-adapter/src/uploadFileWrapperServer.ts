@@ -5,6 +5,7 @@ const config = {
   PORT: Number(process.env.PORT ?? 3096),
   LIBRECHAT_API_ORIGIN: process.env.LIBRECHAT_API_ORIGIN ?? 'http://api:3080',
   TABULAR_CONTEXT_TO_S3_ENABLED: process.env.TABULAR_CONTEXT_TO_S3_ENABLED !== 'false',
+  MAX_FILE_BYTES: Number(process.env.ANALITRICS_MAX_FILE_BYTES ?? 25 * 1024 * 1024),
 };
 
 const TABULAR_EXTENSIONS = new Set([
@@ -109,6 +110,11 @@ function rewriteFormData(formData: FormData, rewriteContext: boolean): FormData 
     }
 
     if (value instanceof File) {
+      if (value.size > config.MAX_FILE_BYTES) {
+        throw new Error(
+          `El archivo ${value.name} pesa ${value.size} bytes y excede el limite permitido de ${config.MAX_FILE_BYTES} bytes`,
+        );
+      }
       next.append(key, value, value.name);
     } else {
       next.append(key, value);

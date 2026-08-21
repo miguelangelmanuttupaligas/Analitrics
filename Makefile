@@ -3,7 +3,7 @@ SHELL := /usr/bin/env bash
 STACKS := keycloak librechat phoenix
 STACK := $(firstword $(filter $(STACKS),$(MAKECMDGOALS)))
 
-.PHONY: keycloak librechat phoenix up down storage-metadata analitrics-build analitrics-profile analitrics-nl-sql analitrics-agent prepare-dirs ensure-network cleanup-network help
+.PHONY: keycloak librechat phoenix up down storage-metadata analitrics-build control-plane-migrate control-plane-grants analitrics-profile analitrics-nl-sql analitrics-agent prepare-dirs ensure-network cleanup-network help
 
 keycloak librechat phoenix:
 	@:
@@ -14,18 +14,24 @@ up down:
 		exit 2; \
 	fi
 	@case "$(STACK)" in \
-		keycloak) compose_dir="keycloak" ;; \
-		librechat) compose_dir="librechat-src" ;; \
-		phoenix) compose_dir="phoenix" ;; \
+		keycloak) compose_dir="keycloak"; compose_project="keycloak" ;; \
+		librechat) compose_dir="librechat/custom"; compose_project="librechat-src" ;; \
+		phoenix) compose_dir="phoenix"; compose_project="phoenix" ;; \
 	esac; \
+	set -euo pipefail; \
 	case "$@" in \
 		up) if [[ "$(STACK)" == "phoenix" ]]; then \
 				$(MAKE) --no-print-directory ensure-network; \
 			else \
 				$(MAKE) --no-print-directory prepare-dirs ensure-network; \
 			fi; \
-			docker compose --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" up -d --remove-orphans ;; \
-		down) docker compose --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" down --remove-orphans; $(MAKE) --no-print-directory cleanup-network ;; \
+			docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" up -d --remove-orphans; \
+			if [[ "$(STACK)" == "librechat" ]]; then \
+				for i in {1..30}; do docker exec analitrics-analitrics-mongodb mongosh LibreChat --quiet --eval 'db.adminCommand({ping:1}).ok' >/dev/null 2>&1 && break || sleep 1; done; \
+				docker exec analitrics-analitrics-mongodb mongosh LibreChat --quiet --eval 'const locked={PROMPTS:{USE:false,CREATE:false,SHARE:false,SHARE_PUBLIC:false},AGENTS:{USE:true,CREATE:false,SHARE:false,SHARE_PUBLIC:false},RUN_CODE:{USE:false},WEB_SEARCH:{USE:false},MARKETPLACE:{USE:false},MCP_SERVERS:{USE:true,CREATE:false,SHARE:false,SHARE_PUBLIC:false,CONFIGURE_OBO:false},REMOTE_AGENTS:{USE:false,CREATE:false,SHARE:false,SHARE_PUBLIC:false},SKILLS:{USE:false,CREATE:false,SHARE:false,SHARE_PUBLIC:false}}; const res=db.roles.updateMany({name:{$$in:["USER","ADMIN"]}},{$$set:Object.fromEntries(Object.entries(locked).map(([k,v])=>["permissions."+k,v]))}); printjson({matched:res.matchedCount,modified:res.modifiedCount,locked:Object.keys(locked)});'; \
+				docker exec analitrics-analitrics-mongodb mongosh LibreChat --quiet --eval 'const author=db.users.findOne({email:"analitrics.user@example.com"},{_id:1,email:1}); if(!author){printjson({ok:false,skipped:"agent_analitrics",reason:"author user not found"}); quit(0);} const viewer=db.accessroles.findOne({accessRoleId:"agent_viewer",resourceType:"agent"},{_id:1,permBits:1}); const owner=db.accessroles.findOne({accessRoleId:"agent_owner",resourceType:"agent"},{_id:1,permBits:1}); if(!viewer||!owner){throw new Error("agent access roles not found");} const now=new Date(); const existing=db.agents.findOne({id:"agent_analitrics"},{_id:1}); const agentId=existing?existing._id:new ObjectId(); db.agents.updateOne({id:"agent_analitrics"},{$$set:{_id:agentId,id:"agent_analitrics",name:"Analitrics",description:"Agente analítico único de Analitrics.",instructions:"Responde únicamente preguntas analíticas sobre los archivos cargados por el usuario.",provider:"openAI",model:"analitrics-agent",model_parameters:{},tools:[],tool_resources:{},author:author._id,category:"general",execute_code:false,file_search:false,web_search:false,is_promoted:true,tenantId:"analitrics",updatedAt:now},$$setOnInsert:{createdAt:now}},{upsert:true}); db.aclentries.updateOne({principalType:"public",resourceType:"agent",resourceId:agentId},{$$set:{permBits:viewer.permBits,roleId:viewer._id,grantedBy:author._id,grantedAt:now}},{upsert:true}); db.aclentries.updateOne({principalType:"user",principalId:author._id,principalModel:"User",resourceType:"agent",resourceId:agentId},{$$set:{permBits:owner.permBits,roleId:owner._id,grantedBy:author._id,grantedAt:now}},{upsert:true}); printjson({ok:true,id:"agent_analitrics",_id:agentId,publicPermBits:viewer.permBits,ownerPermBits:owner.permBits});'; \
+			fi ;; \
+		down) docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" down --remove-orphans; $(MAKE) --no-print-directory cleanup-network ;; \
 	esac
 
 ensure-network:
@@ -40,13 +46,25 @@ storage-metadata:
 analitrics-build:
 	@docker build -t analitrics-app:local analitrics-app
 
+control-plane-migrate: ensure-network analitrics-build
+	@docker run --rm --network network-analitrics --env-file librechat/custom/.env \
+		-e ANALITRICS_POSTGRES_HOST=control-postgres \
+		-e ANALITRICS_POSTGRES_PORT=5432 \
+		analitrics-app:local -m alembic -c alembic.ini upgrade head
+
+control-plane-grants: ensure-network analitrics-build
+	@docker run --rm --network network-analitrics --env-file librechat/custom/.env \
+		-e ANALITRICS_POSTGRES_HOST=control-postgres \
+		-e ANALITRICS_POSTGRES_PORT=5432 \
+		analitrics-app:local scripts/control_plane_permissions.py
+
 analitrics-profile:
 	@if [[ -z "$${FILE_ID:-}" && -z "$${FILENAME:-}" ]]; then \
 		echo "Usage: FILE_ID=<file_id> make analitrics-profile"; \
 		echo "   or: FILENAME=data_2024_2026.xlsx make analitrics-profile"; \
 		exit 2; \
 	fi
-	@docker run --rm --user "$$(id -u):$$(id -g)" --network network-analitrics --env-file librechat-src/.env \
+	@docker run --rm --user "$$(id -u):$$(id -g)" --network network-analitrics --env-file librechat/custom/.env \
 		-e MONGO_URI=mongodb://mongodb:27017/LibreChat \
 		-e MONGO_DB=LibreChat \
 		-e AWS_ENDPOINT_URL=http://storage-rustfs:9000 \
@@ -64,7 +82,7 @@ analitrics-nl-sql:
 		echo "   or: QUESTION='pregunta...' FILENAME=data_2024_2026.xlsx make analitrics-nl-sql"; \
 		exit 2; \
 	fi
-	@docker run --rm --user "$$(id -u):$$(id -g)" --network network-analitrics --env-file librechat-src/.env \
+	@docker run --rm --user "$$(id -u):$$(id -g)" --network network-analitrics --env-file librechat/custom/.env \
 		-e MONGO_URI=mongodb://mongodb:27017/LibreChat \
 		-e MONGO_DB=LibreChat \
 		-e AWS_ENDPOINT_URL=http://storage-rustfs:9000 \
@@ -73,17 +91,22 @@ analitrics-nl-sql:
 
 analitrics-agent:
 	@if [[ -z "$${QUESTION:-}" ]]; then \
-		echo "Usage: QUESTION='pregunta...' FILE_ID=<file_id> make analitrics-agent"; \
-		echo "   or: QUESTION='pregunta...' FILENAME=data_2024_2026.xlsx make analitrics-agent"; \
-		echo "   or: QUESTION='pregunta...' FILE_IDS=id1,id2 make analitrics-agent"; \
-		echo "   or: QUESTION='pregunta...' FILENAMES=a.xlsx,b.csv make analitrics-agent"; \
+		echo "Usage: QUESTION='pregunta...' CONVERSATION_ID=<conversation_id> FILE_ID=<file_id> make analitrics-agent"; \
+		echo "   or: QUESTION='pregunta...' CONVERSATION_ID=<conversation_id> FILENAME=data_2024_2026.xlsx make analitrics-agent"; \
+		echo "   or: QUESTION='pregunta...' CONVERSATION_ID=<conversation_id> FILE_IDS=id1,id2 make analitrics-agent"; \
+		echo "   or: QUESTION='pregunta...' CONVERSATION_ID=<conversation_id> FILENAMES=a.xlsx,b.csv make analitrics-agent"; \
+		exit 2; \
+	fi
+	@if [[ -z "$${CONVERSATION_ID:-}" ]]; then \
+		echo "Usage: QUESTION='pregunta...' CONVERSATION_ID=<conversation_id> FILE_ID=<file_id> make analitrics-agent"; \
+		echo "CONVERSATION_ID is required; Analitrics no longer accepts analysisSessionId or implicit sessions."; \
 		exit 2; \
 	fi
 	@if [[ -z "$${FILE_ID:-}" && -z "$${FILENAME:-}" && -z "$${FILE_IDS:-}" && -z "$${FILENAMES:-}" ]]; then \
-		echo "Usage: QUESTION='pregunta...' FILE_ID=<file_id> make analitrics-agent"; \
-		echo "   or: QUESTION='pregunta...' FILENAME=data_2024_2026.xlsx make analitrics-agent"; \
-		echo "   or: QUESTION='pregunta...' FILE_IDS=id1,id2 make analitrics-agent"; \
-		echo "   or: QUESTION='pregunta...' FILENAMES=a.xlsx,b.csv make analitrics-agent"; \
+		echo "Usage: QUESTION='pregunta...' CONVERSATION_ID=<conversation_id> FILE_ID=<file_id> make analitrics-agent"; \
+		echo "   or: QUESTION='pregunta...' CONVERSATION_ID=<conversation_id> FILENAME=data_2024_2026.xlsx make analitrics-agent"; \
+		echo "   or: QUESTION='pregunta...' CONVERSATION_ID=<conversation_id> FILE_IDS=id1,id2 make analitrics-agent"; \
+		echo "   or: QUESTION='pregunta...' CONVERSATION_ID=<conversation_id> FILENAMES=a.xlsx,b.csv make analitrics-agent"; \
 		exit 2; \
 	fi
 	@if [[ ! -w /var/analitrics/analytics/cache ]]; then \
@@ -91,7 +114,7 @@ analitrics-agent:
 		echo "Run: make librechat up"; \
 		exit 2; \
 	fi
-	@docker run --rm --user "$$(id -u):$$(id -g)" --network network-analitrics --env-file librechat-src/.env \
+	@docker run --rm --user "$$(id -u):$$(id -g)" --network network-analitrics --env-file librechat/custom/.env \
 		-e MONGO_URI=mongodb://mongodb:27017/LibreChat \
 		-e MONGO_DB=LibreChat \
 		-e AWS_ENDPOINT_URL=http://storage-rustfs:9000 \
@@ -100,7 +123,7 @@ analitrics-agent:
 		-e OTEL_EXPORTER_OTLP_ENDPOINT="$${OTEL_EXPORTER_OTLP_ENDPOINT:-http://phoenix:4317}" \
 		-e PHOENIX_PROJECT_NAME="$${PHOENIX_PROJECT_NAME:-analitrics-mvp}" \
 		-v /var/analitrics/analytics:/var/analitrics/analytics \
-		analitrics-app:local scripts/agent_file.py $${FILE_ID:+--file-id "$$FILE_ID"} $${FILENAME:+--filename "$$FILENAME"} $${FILE_IDS:+--file-ids "$$FILE_IDS"} $${FILENAMES:+--filenames "$$FILENAMES"} $${USER_ID:+--user-id "$$USER_ID"} $${CONVERSATION_ID:+--conversation-id "$$CONVERSATION_ID"} $${MESSAGE_ID:+--message-id "$$MESSAGE_ID"} $${ANALYSIS_SESSION_ID:+--analysis-session-id "$$ANALYSIS_SESSION_ID"} --question "$$QUESTION"
+		analitrics-app:local python -m analitrics_agent.cli $${FILE_ID:+--file-id "$$FILE_ID"} $${FILENAME:+--filename "$$FILENAME"} $${FILE_IDS:+--file-ids "$$FILE_IDS"} $${FILENAMES:+--filenames "$$FILENAMES"} $${USER_ID:+--user-id "$$USER_ID"} --conversation-id "$$CONVERSATION_ID" $${MESSAGE_ID:+--message-id "$$MESSAGE_ID"} --question "$$QUESTION"
 
 prepare-dirs:
 	@set -euo pipefail; \
@@ -116,6 +139,7 @@ prepare-dirs:
 		/var/analitrics/storage/data \
 		/var/analitrics/storage/logs \
 		/var/analitrics/analytics/cache \
+		/var/analitrics/analytics/postgresql \
 		/var/analitrics/keycloak/postgresql \
 		/var/analitrics/keycloak/certs \
 		/var/analitrics/observability/phoenix \
@@ -126,7 +150,7 @@ prepare-dirs:
 	if [[ "$${needs_mkdir:-0}" == "1" ]]; then \
 		sudo mkdir -p /var/analitrics/librechat/{mongodb,vectordb,uploads,logs,skill,data,images,certs}; \
 		sudo mkdir -p /var/analitrics/storage/{data,logs}; \
-		sudo mkdir -p /var/analitrics/analytics/cache; \
+		sudo mkdir -p /var/analitrics/analytics/{cache,postgresql}; \
 		sudo mkdir -p /var/analitrics/keycloak/{postgresql,certs}; \
 		sudo mkdir -p /var/analitrics/observability/phoenix; \
 	fi; \
@@ -138,6 +162,9 @@ prepare-dirs:
 	fi; \
 	if [[ "$$(stat -c '%u:%g' /var/analitrics/keycloak/postgresql)" != "70:70" ]]; then \
 		sudo chown -R 70:70 /var/analitrics/keycloak/postgresql; \
+	fi; \
+	if [[ "$$(stat -c '%u:%g' /var/analitrics/analytics/postgresql)" != "70:70" ]]; then \
+		sudo chown -R 70:70 /var/analitrics/analytics/postgresql; \
 	fi; \
 	local_owner="$$(id -u):$$(id -g)"; \
 	for dir in /var/analitrics/librechat/{uploads,logs,skill,data,images,certs} /var/analitrics/storage/{data,logs} /var/analitrics/analytics/cache; do \

@@ -1,0 +1,412 @@
+PRUEBA 1 - VALIDACION DE CARGA DE ARCHIVOS HASTA DUCKDB
+Fecha: 2026-08-21
+Ambiente: local docker compose Analitrics
+Objetivo: validar el flujo LibreChat/RustFS/Mongo -> agente -> DuckDB -> catalogo Postgres sin llegar al LLM.
+
+Resumen ejecutivo
+=================
+Resultado final: 11 casos pasaron, 1 caso fallo.
+
+El flujo principal funciona para:
+- XLSX real de una hoja.
+- XLSX real de varias hojas.
+- Varios XLSX en el mismo contexto DuckDB.
+- CSV con coma.
+- CSV con punto y coma via DuckDB read_csv_auto.
+- Pregunta posterior sin re-adjuntar archivo, resolviendo contexto previo de la conversacion.
+- Conversacion sin archivo con error controlado.
+- Aislamiento por tenantId.
+- Cache DuckDB por sesion.
+- Archivo XLSX corrupto con error especifico de etapa.
+- Persistencia de catalogo/perfil en Postgres.
+
+El fallo real encontrado:
+- Aislamiento por userId: otro userId dentro del mismo tenant pudo resolver un file_id ajeno.
+
+Alcance de la prueba
+====================
+No se probo el punto de borrado/invalidation de archivos porque fue excluido explicitamente.
+
+La prueba se ejecuto contra el servicio de ingesta/validacion del agente, sin LLM:
+- llmUsed=false en todos los casos.
+- Se valido que los archivos terminen en DuckDB.
+- Se valido que el catalogo/perfil se persista en Postgres.
+- Se valido que la metadata base venga desde Mongo.
+- Se valido que los objetos originales existan en RustFS/S3 compatible.
+
+Datos usados
+============
+Archivos reales existentes, ya cargados previamente por LibreChat:
+- data_2024_2026.xlsx
+  file_id=d98d15ef-ea3a-4eca-8d55-42518f86d1a1
+  Tipo: XLSX de una hoja.
+
+- data_2023.xlsx
+  file_id=47d28c52-5ebd-47f4-b72c-bcb1a0b0901c
+  Tipo: XLSX con varias hojas.
+  Hojas detectadas: Hoja1, Data_2023, Metodologia.
+
+Fixtures creados para esta prueba en RustFS + Mongo:
+- prueba1_comma.csv
+  file_id=14776219-b6a1-400e-bb57-9be1fd487534
+  mime=text/csv
+  sha256=3b7166a1c280e8cc8da28b6556f8d891fadcbbff77874418bed4891ecd8fd6f3
+
+- prueba1_semicolon.csv
+  file_id=54858add-0fe7-48f0-9ec0-bbadd800e3a1
+  mime=text/csv
+  sha256=65841a062a0662bc10641bf31e8a5df6187eeac46d1d92b3462f509871df55a3
+
+- prueba1_corrupt.xlsx
+  file_id=25c6306d-e524-4549-9e2e-2b5466feedbf
+  mime=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+  sha256=13d726addd8eae97a7f45839131c5791c0bfca95894e6cee0b73e4bce657f2cf
+
+Nota sobre fixtures:
+Los CSV y el XLSX corrupto fueron sembrados directamente en RustFS y Mongo para validar desde metadata/storage hacia DuckDB. Esto valida el tramo de resolucion/ingesta del agente, pero no prueba el upload HTTP multipart de LibreChat para CSV. Para cerrar esa parte faltaria una prueba por API/UI real de upload.
+
+Casos ejecutados
+================
+
+01_xlsx_simple - PASO
+Descripcion: XLSX real de una hoja.
+Resultado:
+- file_id resuelto: d98d15ef-ea3a-4eca-8d55-42518f86d1a1
+- DuckDB creado: /var/analitrics/analytics/cache/analitrics/_6a8097c5324af6e6b24859eb/analitrics_prueba1_carga_xlsx_simple.duckdb
+- Tablas: 2 incluyendo __analitrics_catalog
+- Filas totales reportadas: 10813
+- Tabla principal: data_2024_2026_d98d15ef_data_2024_2026_hoja1
+- Filas tabla principal: 10812
+- Columnas: categoria, unidad, tipo_producto, producto, fecha_inicio, monto, persona_id, pais, fecha_registro
+- Catalogo Postgres persistido: si
+- contentHash calculado: sha256:7230a4414bc96654b7e9f7e6bfb49fdf3c3aaf55686115bdb3202cc305cbe72d
+
+02_xlsx_multi_sheet - PASO
+Descripcion: XLSX real con varias hojas.
+Resultado:
+- file_id resuelto: 47d28c52-5ebd-47f4-b72c-bcb1a0b0901c
+- DuckDB creado: /var/analitrics/analytics/cache/analitrics/_6a8097c5324af6e6b24859eb/analitrics_prueba1_carga_xlsx_multi.duckdb
+- Tablas: 4 incluyendo __analitrics_catalog
+- Filas totales reportadas: 16527
+- Tablas creadas:
+  - data_2023__47d28c52_data_2023_hoja1, 10812 filas
+  - data_2023__47d28c52_data_2023_data_2023, 5689 filas
+  - data_2023__47d28c52_data_2023_metodologia, 23 filas
+  - __analitrics_catalog, 3 filas
+- Catalogo Postgres persistido: si
+- contentHash calculado: sha256:1b24eb210ded2a3150ed8ae85da3df7a026e8c7caa1dadf47f67856d795b1175
+
+Descubrimiento:
+La hoja Metodologia tambien entra como tabla tabular. Tecnicamente funciona, pero semanticamente puede ensuciar el catalogo porque tiene columnas como data_2023_sint_tica, unnamed_1, unnamed_2.
+
+Propuesta:
+A futuro agregar clasificacion de hojas: data sheet, dictionary sheet, notes/methodology sheet. No bloquear el MVP, pero usarlo para mejorar catalogo y prompt.
+
+03_two_xlsx_same_context - PASO
+Descripcion: dos XLSX reales en el mismo contexto DuckDB.
+Resultado:
+- file_ids resueltos:
+  - d98d15ef-ea3a-4eca-8d55-42518f86d1a1
+  - 47d28c52-5ebd-47f4-b72c-bcb1a0b0901c
+- DuckDB creado: /var/analitrics/analytics/cache/analitrics/_6a8097c5324af6e6b24859eb/analitrics_prueba1_carga_two_xlsx.duckdb
+- Tablas: 5 incluyendo __analitrics_catalog
+- Filas totales reportadas: 27340
+- Catalogo Postgres persistido: si
+
+Lectura:
+El flujo soporta multiples archivos en el mismo DuckDB de sesion. No valida todavia que el LLM elija correctamente entre tablas similares, solo que el contexto fisico/catalogo existe.
+
+Propuesta:
+Agregar una prueba posterior con preguntas semanticas donde existan columnas iguales en archivos distintos, para validar desambiguacion del agente.
+
+04_csv_simple_comma - PASO
+Descripcion: CSV fixture con coma.
+Resultado:
+- file_id resuelto: 14776219-b6a1-400e-bb57-9be1fd487534
+- DuckDB creado: /var/analitrics/analytics/cache/analitrics/_6a8097c5324af6e6b24859eb/analitrics_prueba1_carga_csv_comma.duckdb
+- Tabla: prueba1_comma__14776219_prueba1_comma
+- Filas tabla: 3
+- Columnas: curso, ingresos, tickets
+- Catalogo Postgres persistido: si
+- contentHash calculado: sha256:3b7166a1c280e8cc8da28b6556f8d891fadcbbff77874418bed4891ecd8fd6f3
+
+05_csv_semicolon - PASO
+Descripcion: CSV fixture con punto y coma.
+Resultado:
+- file_id resuelto: 54858add-0fe7-48f0-9ec0-bbadd800e3a1
+- DuckDB creado: /var/analitrics/analytics/cache/analitrics/_6a8097c5324af6e6b24859eb/analitrics_prueba1_carga_csv_semicolon.duckdb
+- Tabla: prueba1_semicolon__54858add_prueba1_semicolon
+- Filas tabla: 3
+- Columnas: curso, ingresos, tickets
+- Catalogo Postgres persistido: si
+- contentHash calculado: sha256:65841a062a0662bc10641bf31e8a5df6187eeac46d1d92b3462f509871df55a3
+
+Lectura:
+DuckDB read_csv_auto resolvio correctamente el delimitador punto y coma.
+
+06_followup_without_reattach - PASO
+Descripcion: mensaje posterior sin adjunto usa archivo previo de la conversacion.
+Resultado:
+- conversationId de prueba: analitrics-prueba1-carga-carry
+- messageId posterior sin archivo: analitrics-prueba1-carga-follow
+- file_id recuperado desde contexto previo: d98d15ef-ea3a-4eca-8d55-42518f86d1a1
+- DuckDB creado: /var/analitrics/analytics/cache/analitrics/_6a8097c5324af6e6b24859eb/analitrics_prueba1_carga_followup.duckdb
+- Tablas: 2 incluyendo __analitrics_catalog
+- Catalogo Postgres persistido: si
+
+Lectura:
+El resolver de adjuntos puede recuperar archivos anteriores dentro de la conversacion. Esto soporta la idea de que el usuario no tenga que re-adjuntar en cada pregunta.
+
+07_no_file_context - PASO
+Descripcion: pregunta sin archivo ni conversacion.
+Resultado:
+- Error controlado:
+  Provide --file-id, --filename, --file-ids, --filenames, or a conversation/message with attachments
+- llmUsed=false
+
+Lectura:
+El flujo no cae en error generico. Para usuario final conviene traducir este mensaje tecnico a una respuesta mas natural desde el agente/API.
+
+Propuesta:
+Mapear este error a: "Necesito que cargues o mantengas en esta conversacion al menos un CSV o Excel para analizar datos."
+
+08_isolation_other_user - FALLO
+Descripcion: otro userId no deberia poder resolver file_id ajeno.
+Esperado:
+- Error No S3 file metadata.
+
+Resultado real:
+- El otro userId resolvio el archivo d98d15ef-ea3a-4eca-8d55-42518f86d1a1.
+- Se creo DuckDB en:
+  /var/analitrics/analytics/cache/analitrics/_6a8097c5324af6e6b24859eb_other/analitrics_prueba1_carga_other_user.duckdb
+- cacheHits=1
+- Catalogo Postgres persistido bajo ese otro userId.
+
+Motivo probable:
+El resolver de metadata consulta Mongo por tenantId + source + file_id, pero no filtra por user/owner. Como el file_id es suficiente dentro del mismo tenant, cualquier userId que conozca un file_id puede resolverlo.
+
+Riesgo:
+Alto para aislamiento entre usuarios del mismo tenant. Aunque hoy el producto agrupe usuarios en tenant analitrics, un usuario no deberia poder leer archivos privados de otro usuario solo por conocer file_id.
+
+Propuesta de mejora:
+- Endurecer resolve_file para exigir owner cuando no exista un modelo explicito de archivos compartidos.
+- Query minima esperada en Mongo:
+  tenantId + source=s3 + file_id + user=req.user.id
+- Si a futuro hay archivos compartidos, introducir permisos explicitos:
+  ownerUserId, sharedWithUsers, sharedWithGroups, tenantWide=false/true.
+- La cache DuckDB ya queda aislada por userId en ruta, pero eso no basta si antes se permite resolver metadata ajena.
+
+09_isolation_other_tenant - PASO
+Descripcion: otro tenant no puede resolver file_id ajeno.
+Resultado:
+- Error esperado:
+  No S3 file metadata found for query: {'tenantId': 'analitrics-other', 'source': 's3', 'file_id': 'd98d15ef-ea3a-4eca-8d55-42518f86d1a1'}
+
+Lectura:
+El aislamiento por tenantId funciona en resolucion de metadata.
+
+10_cache_first - PASO
+Descripcion: primera ingesta de una sesion cacheada.
+Resultado:
+- cacheHits=0
+- DuckDB creado:
+  /var/analitrics/analytics/cache/analitrics/_6a8097c5324af6e6b24859eb/analitrics_prueba1_carga_cache_session.duckdb
+- Catalogo Postgres persistido: si
+
+11_cache_second - PASO
+Descripcion: segunda ingesta debe reutilizar DuckDB/cache.
+Resultado:
+- cacheHits=1
+- Mismo DuckDB:
+  /var/analitrics/analytics/cache/analitrics/_6a8097c5324af6e6b24859eb/analitrics_prueba1_carga_cache_session.duckdb
+- Archivo reportado con cacheHit=true.
+
+Lectura:
+La cache DuckDB por tenant/user/session funciona para el caso repetido.
+
+12_corrupt_xlsx - PASO
+Descripcion: XLSX corrupto debe fallar con error especifico.
+Resultado:
+- Error esperado y especifico:
+  No pude leer el archivo tabular 'prueba1_corrupt.xlsx' (file_id=25c6306d-e524-4549-9e2e-2b5466feedbf, mime=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet) durante la etapa 'excel_openpyxl'. Causa: File is not a zip file
+
+Lectura:
+El flujo no oculta el problema como error generico. Esto es bueno para soporte y UX.
+
+Catalogo en Postgres
+====================
+Se encontraron perfiles persistidos en:
+- analysis_catalog_sessions
+- analysis_catalog_profiles
+
+Sesiones detectadas para esta prueba:
+- analitrics-prueba1-carga-cache-session: 2 perfiles activos
+- analitrics-prueba1-carga-csv-comma: 4 perfiles activos
+- analitrics-prueba1-carga-csv-semicolon: 4 perfiles activos
+- analitrics-prueba1-carga-debug: 2 perfiles activos
+- analitrics-prueba1-carga-followup: 2 perfiles activos
+- analitrics-prueba1-carga-two-xlsx: 5 perfiles activos
+- analitrics-prueba1-carga-xlsx-multi: 4 perfiles activos
+- analitrics-prueba1-carga-xlsx-simple: 2 perfiles activos
+
+Descubrimiento:
+Los perfiles de csv-comma/csv-semicolon aparecen con 4 perfiles activos porque hubo una corrida previa con otros file_id fixture bajo el mismo session_id de prueba. Como no se ejecuto invalidacion de archivo ni limpieza de Postgres para esta prueba, los perfiles previos quedaron activos.
+
+Lectura:
+Esto no invalida el flujo principal, pero muestra que las pruebas repetidas con la misma session_id y nuevos file_id pueden acumular catalogo en Postgres si se siembran fixtures manualmente.
+
+Propuesta:
+- Para test suites, limpiar catalogo por prefijo/session_id antes de correr.
+- Para producto real, mantener la invalidacion por borrado/logical delete cuando se borren archivos.
+- Para reingestas, definir una politica clara: misma session + nuevo file_id suma contexto; archivo borrado/despublicado se marca inactive; TTL limpia DuckDB fisico.
+
+Conclusiones
+============
+1. El flujo de carga/ingesta hasta DuckDB funciona para XLSX y CSV.
+2. El XLSX multi-hoja funciona creando una tabla por hoja.
+3. El catalogo tecnico se persiste en Postgres con claves tenant_id, user_id, session_id.
+4. El hash real del contenido se esta calculando y exponiendo como contentHash.
+5. La cache DuckDB por sesion funciona.
+6. La recuperacion de archivos desde mensajes anteriores de la conversacion funciona.
+7. Los errores de archivo corrupto son especificos y accionables.
+8. El aislamiento por tenantId funciona.
+9. El aislamiento por userId no funciona y debe endurecerse antes de considerar el flujo robusto.
+
+Propuestas priorizadas
+======================
+P0 - Seguridad: filtrar ownership por userId al resolver file_id
+Motivo:
+Hoy un userId diferente dentro del mismo tenant puede resolver un archivo ajeno si conoce el file_id.
+Accion propuesta:
+Modificar resolucion de metadata para exigir user=req.user.id o un permiso explicito de comparticion.
+
+Addendum de correccion - 2026-08-21
+===================================
+Se corrigio el hallazgo P0.
+
+Cambio aplicado:
+- resolve_file ahora incorpora owner en el query de mongodb.files cuando el request trae user_id.
+- Como LibreChat guarda files.user como ObjectId, el filtro soporta ambos formatos:
+  user string y ObjectId(user_id).
+- El filtro efectivo queda conceptualmente:
+  tenantId + source=s3 + file_id/filename + user in [user_id, ObjectId(user_id)]
+
+Validacion posterior:
+- Usuario owner:
+  userId=6a8097c5324af6e6b24859eb
+  file_id=d98d15ef-ea3a-4eca-8d55-42518f86d1a1
+  Resultado: OK, archivo resuelto, DuckDB creado, tableCount=2.
+
+- Usuario ajeno:
+  userId=6a8097c5324af6e6b24859eb-other
+  file_id=d98d15ef-ea3a-4eca-8d55-42518f86d1a1
+  Resultado: BLOQUEADO con:
+  No S3 file metadata found for query: {'tenantId': 'analitrics', 'source': 's3', 'user': {'$in': ['6a8097c5324af6e6b24859eb-other']}, 'file_id': 'd98d15ef-ea3a-4eca-8d55-42518f86d1a1'}
+
+Lectura:
+El path de RustFS ya incluye el id del usuario propietario:
+t/analitrics/uploads/<ownerUserId>/<file_id>__<filename>
+pero la proteccion no debe depender solo del path. El bloqueo correcto ahora ocurre antes, al resolver metadata en Mongo por owner.
+
+P1 - UX: traducir error sin archivo
+Motivo:
+El error actual es tecnico.
+Accion propuesta:
+Mapearlo a un mensaje de producto claro en espanol.
+
+P1 - Catalogo: clasificar hojas Excel
+Motivo:
+Hojas de metodologia/diccionario pueden entrar como tablas normales.
+Accion propuesta:
+Detectar hojas de datos vs diccionario/metodologia. Las hojas no tabulares deberian alimentar contexto semantico, no necesariamente tablas consultables.
+
+P1 - Testabilidad: suite reproducible sin residuos
+Motivo:
+Las corridas repetidas con fixtures acumulan perfiles Postgres si usan la misma session_id.
+Accion propuesta:
+Agregar modo de limpieza para prefijos de prueba en Postgres, Mongo, RustFS y cache DuckDB.
+
+P2 - Validacion upload HTTP real para CSV
+Motivo:
+Los CSV fueron sembrados directo en RustFS/Mongo. Se valido ingesta desde storage hacia DuckDB, no el multipart upload completo desde LibreChat.
+Accion propuesta:
+Agregar prueba E2E por API/UI que suba CSV real via LibreChat/upload-file-wrapper y luego valide Mongo/RustFS/DuckDB/Postgres.
+
+P2 - Preguntas semanticas multiarchivo
+Motivo:
+Esta prueba valida contexto fisico y catalogo, no decision semantica del agente cuando hay tablas parecidas.
+Accion propuesta:
+Luego de corregir aislamiento por userId, correr preguntas reales con LLM sobre dos archivos parecidos y revisar SQL/trazas.
+
+Addendum de prueba semantica multiarchivo - 2026-08-21
+======================================================
+Se ejecuto la prueba pendiente con el agente completo, incluyendo LLM, generacion SQL, ejecucion DuckDB, critica y chart_spec.
+
+Pregunta:
+Compara los ingresos totales por producto entre data_2023.xlsx y data_2024_2026.xlsx. Devuelve los 10 productos con mayor diferencia absoluta e indica en que archivo son mayores los ingresos.
+
+Archivos usados:
+- data_2023.xlsx
+  file_id=47d28c52-5ebd-47f4-b72c-bcb1a0b0901c
+- data_2024_2026.xlsx
+  file_id=d98d15ef-ea3a-4eca-8d55-42518f86d1a1
+
+Resultado tecnico:
+- in_scope=true
+- files resueltos=2
+- tablas disponibles=5
+- DuckDB cache:
+  /var/analitrics/analytics/cache/analitrics/_6a8097c5324af6e6b24859eb/prueba1_semantic_multiarchivo.duckdb
+- SQL generado y ejecutado correctamente.
+- row_count=10
+- critic.approved=true
+- chart_spec.chart_required=true
+
+SQL ejecutado:
+SELECT
+  COALESCE(i23.producto, i2426.producto) AS producto,
+  COALESCE(i23.ingresos_data_2023, 0) AS ingresos_data_2023_xlsx,
+  COALESCE(i2426.ingresos_data_2024_2026, 0) AS ingresos_data_2024_2026_xlsx,
+  COALESCE(i2426.ingresos_data_2024_2026, 0) - COALESCE(i23.ingresos_data_2023, 0) AS diferencia_data_2024_2026_menos_data_2023,
+  ABS(COALESCE(i2426.ingresos_data_2024_2026, 0) - COALESCE(i23.ingresos_data_2023, 0)) AS diferencia_absoluta,
+  CASE
+    WHEN COALESCE(i23.ingresos_data_2023, 0) > COALESCE(i2426.ingresos_data_2024_2026, 0) THEN 'data_2023.xlsx'
+    WHEN COALESCE(i2426.ingresos_data_2024_2026, 0) > COALESCE(i23.ingresos_data_2023, 0) THEN 'data_2024_2026.xlsx'
+    ELSE 'Iguales'
+  END AS archivo_con_mayores_ingresos
+FROM (
+  SELECT
+    producto,
+    SUM(COALESCE(monto, 0)) AS ingresos_data_2023
+  FROM "data_2023__47d28c52_data_2023_data_2023"
+  GROUP BY producto
+) AS i23
+FULL OUTER JOIN (
+  SELECT
+    producto,
+    SUM(COALESCE(monto, 0)) AS ingresos_data_2024_2026
+  FROM "data_2024_2026_d98d15ef_data_2024_2026_hoja1"
+  GROUP BY producto
+) AS i2426
+  ON i23.producto = i2426.producto
+ORDER BY diferencia_absoluta DESC, producto
+LIMIT 10;
+
+Respuesta obtenida:
+Los 10 productos con mayor diferencia absoluta fueron todos mayores en data_2024_2026.xlsx. El top incluyo:
+1. Especializacion Power Apps y Power Automate: 469,320
+2. Analitica de Datos de Recursos Humanos - MEF: 450,000
+3. Data Storytelling - Pacifico Salud: 447,300
+4. Data Practitioner - LAP: 416,000
+5. Especializacion en Power BI: 357,692
+
+Lectura de calidad:
+El flujo resolvio correctamente archivos, tablas, SQL y ejecucion. Para una pregunta multiarchivo, el SQL es razonable: agrega por producto, compara ambos archivos con FULL OUTER JOIN, calcula diferencia absoluta y ordena.
+
+Limite detectado:
+data_2023.xlsx contiene varias hojas con columnas similares. El agente eligio la tabla:
+data_2023__47d28c52_data_2023_data_2023
+No tenemos aun un catalogo certificado ni feedback de usuario que indique que esa hoja es la fuente oficial para comparar 2023. Por eso, aunque el SQL sea tecnicamente correcto, no se puede certificar semanticamente que la hoja escogida sea siempre la correcta.
+
+Conclusion:
+El flujo de resolver archivos ya esta en muy buen estado para MVP: metadata, owner, RustFS, DuckDB, cache, profiling y Postgres funcionan. La calidad del SQL esta en el techo razonable del estado actual. Para mejorar mas se necesita incorporar feedback de usuario, catalogo/diccionario certificado, reglas de hoja oficial y conceptos de negocio validados.

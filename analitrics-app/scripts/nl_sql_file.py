@@ -13,6 +13,8 @@ import boto3
 import duckdb
 import pandas as pd
 import sqlglot
+from sqlglot import exp
+from bson import ObjectId
 from openai import OpenAI
 from pymongo import MongoClient
 
@@ -31,6 +33,15 @@ TABULAR_TYPES = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "application/vnd.oasis.opendocument.spreadsheet",
 }
+
+FORBIDDEN_SQL_TERMS = re.compile(
+    r"\b("
+    r"insert|update|delete|create|drop|alter|truncate|merge|replace|copy|attach|detach|install|load|pragma|"
+    r"set|call|vacuum|export|import|grant|revoke|read_csv|read_json|read_parquet|glob|sqlite_scan|"
+    r"postgres_scan|mysql_scan"
+    r")\b",
+    re.I,
+)
 
 
 @dataclass
@@ -75,10 +86,47 @@ def connect_mongo() -> MongoClient:
     return MongoClient(env("MONGO_URI", "mongodb://mongodb:27017/LibreChat"))
 
 
+def owner_query_values(user_id: str) -> list[Any]:
+    values: list[Any] = [user_id]
+    try:
+        values.append(ObjectId(user_id))
+    except Exception:
+        pass
+    return values
+
+
+def validate_storage_key_owner(storage_key: str, tenant_id: str, user_id: str | None) -> None:
+    if not user_id:
+        raise RuntimeError("Analitrics requires userId to resolve S3 files")
+
+    expected_prefix = f"t/{tenant_id}/uploads/{user_id}/"
+    normalized = storage_key.lstrip("/")
+    if not normalized.startswith(expected_prefix):
+        raise RuntimeError(
+            "File storageKey does not match the authenticated tenant/user path "
+            f"(expected prefix: {expected_prefix})"
+        )
+
+
+def safe_child_path(base: Path, filename: str, fallback: str) -> Path:
+    base_resolved = base.resolve()
+    safe_name = Path(filename).name
+    if not safe_name or safe_name in {".", ".."}:
+        safe_name = fallback
+
+    target = (base_resolved / safe_name).resolve()
+    if not target.is_relative_to(base_resolved):
+        raise RuntimeError(f"Unsafe download path rejected: {target}")
+    return target
+
+
 def resolve_file(args: argparse.Namespace) -> FileMetadata:
     mongo = connect_mongo()
     db_name = env("MONGO_DB", "LibreChat")
     query: dict[str, Any] = {"tenantId": args.tenant_id, "source": "s3"}
+    user_id = getattr(args, "user_id", None)
+    if user_id:
+        query["user"] = {"$in": owner_query_values(str(user_id))}
     if args.file_id:
         query["file_id"] = args.file_id
     elif args.filename:
@@ -99,6 +147,7 @@ def resolve_file(args: argparse.Namespace) -> FileMetadata:
     storage_key = doc.get("storageKey")
     if not storage_key:
         raise RuntimeError(f"File {doc.get('file_id')} has no storageKey")
+    validate_storage_key_owner(str(storage_key), str(doc.get("tenantId") or args.tenant_id), str(user_id) if user_id else None)
 
     return FileMetadata(
         file_id=str(doc["file_id"]),
@@ -113,15 +162,16 @@ def resolve_file(args: argparse.Namespace) -> FileMetadata:
 
 def download_from_rustfs(metadata: FileMetadata, target_dir: Path) -> Path:
     endpoint = env("AWS_ENDPOINT_URL", "http://storage-rustfs:9000")
-    bucket = env("AWS_BUCKET_NAME", env("RUSTFS_BUCKET_NAME", "librechat"))
+    bucket = env("AWS_BUCKET_NAME", "librechat")
     client = boto3.client(
         "s3",
         endpoint_url=endpoint,
-        aws_access_key_id=env("AWS_ACCESS_KEY_ID", env("RUSTFS_ACCESS_KEY_ID")),
-        aws_secret_access_key=env("AWS_SECRET_ACCESS_KEY", env("RUSTFS_SECRET_ACCESS_KEY")),
-        region_name=env("AWS_REGION", env("RUSTFS_REGION", "us-east-1")),
+        aws_access_key_id=env("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=env("AWS_SECRET_ACCESS_KEY"),
+        region_name=env("AWS_REGION", "us-east-1"),
     )
-    local_path = target_dir / metadata.filename
+    target_dir.mkdir(parents=True, exist_ok=True)
+    local_path = safe_child_path(target_dir, metadata.filename, metadata.file_id)
     client.download_file(bucket, metadata.storage_key, str(local_path))
     return local_path
 
@@ -230,16 +280,23 @@ def generate_sql(question: str, metadata: FileMetadata, profiles: list[dict[str,
 
 
 def validate_select_sql(sql: str) -> None:
-    if not sql.strip():
+    candidate = sql.strip()
+    if not candidate:
         raise RuntimeError("Generated SQL is empty")
-    forbidden = re.compile(r"\b(insert|update|delete|create|drop|alter|copy|attach|install|load|pragma)\b", re.I)
-    if forbidden.search(sql):
-        raise RuntimeError("SQL contains forbidden statement")
-    expressions = sqlglot.parse(sql, read="duckdb")
+
+    candidate = candidate.rstrip(";").strip()
+    if ";" in candidate:
+        raise RuntimeError("Only one SQL statement is allowed")
+
+    if FORBIDDEN_SQL_TERMS.search(candidate):
+        raise RuntimeError("SQL contains forbidden read/write or filesystem operation")
+
+    expressions = sqlglot.parse(candidate, read="duckdb")
     if len(expressions) != 1:
         raise RuntimeError("Only one SQL statement is allowed")
+
     expression = expressions[0]
-    if expression.key not in {"select", "with", "union"}:
+    if not isinstance(expression, (exp.Select, exp.Union)):
         raise RuntimeError(f"Only SELECT/WITH queries are allowed, got: {expression.key}")
 
 

@@ -34,7 +34,8 @@ Este hito existe para validar empíricamente cómo LibreChat recibe, persiste y 
 
 La arquitectura activa del repo será:
 
-- `librechat-src/`: runtime y configuración del chat. Debe levantar LibreChat desde imágenes/versiones controladas y configuración propia del despliegue Analitrics. No debe contener el árbol fuente completo de LibreChat salvo que decidamos formalmente mantener un fork.
+- `librechat/fork/`: árbol fuente upstream de LibreChat clonado para desarrollar cambios React/controlados sobre el producto base.
+- `librechat/custom/`: runtime, compose, gateway, configuración y parches de transición de Analitrics sobre LibreChat. Mientras migramos a cambios fuente reales, esta carpeta ensambla la imagen con parches explícitos.
 - `keycloak/`: identidad, realm, theme y configuración de SSO.
 - `analitrics-adapter/`: adaptador delgado entre LibreChat y la capa analítica. Aquí viven wrappers/proxies mínimos que median tráfico de LibreChat sin introducir lógica analítica.
 - `analitrics-app/`: runtime Python donde debe concentrarse la lógica analítica.
@@ -42,15 +43,15 @@ La arquitectura activa del repo será:
 
 Componentes de infraestructura:
 
-- RustFS será levantado desde el compose de `librechat-src/` como almacenamiento S3 compatible para archivos cargados.
-- Postgres de control plane queda como diseño futuro para metadata y memoria analítica persistente. No forma parte del flujo implementado actual.
+- RustFS será levantado desde el compose de `librechat/custom/` como almacenamiento S3 compatible para archivos cargados.
+- Postgres de control plane ya forma parte del MVP para catálogo/profiling derivado de archivos. La memoria analítica avanzada, diccionarios confirmados, permisos finos y dashboard/widgets quedan como evolución sobre ese control plane.
 
 Carpetas retiradas del contrato activo:
 
 - `analitrics-extension/`: contenía el MVP DirectFlow anterior en TypeScript. Se rescatarán aprendizajes a nivel documental, pero el código se elimina del nuevo repo.
 - `librechat-build-src/`: contenía un árbol fuente/fork previo de LibreChat. Se elimina del nuevo repo hasta que exista una decisión explícita de mantener un fork.
 - `librechat-fork-tmp/`: fue una carpeta temporal de exploración upstream. Se elimina del nuevo repo.
-- `librechat/`: contenía compose/configuración del MVP anterior. Se elimina del nuevo repo si su contenido ya no es usado por el despliegue activo.
+- `librechat-src/`: fue la carpeta previa de runtime/configuración. Se elimina y su contenido activo pasa a `librechat/custom/`.
 
 Regla central:
 
@@ -59,7 +60,7 @@ Regla central:
 - Node/TypeScript queda permitido cerca de LibreChat solo para transporte, adaptación y lectura de contexto interno del runtime.
 - La lógica DirectFlow previa no se migra como código; solo se rescatan ideas útiles en documentación.
 
-## 4. Qué sí puede vivir dentro de LibreChat (librechat-src)
+## 4. Qué sí puede vivir dentro de LibreChat (`librechat/custom` y `librechat/fork`)
 
 Aceptable dentro de LibreChat:
 
@@ -163,8 +164,11 @@ Decisiones:
 - `analitrics-app/` será el runtime Python para lógica analítica;
 - LangGraph será la herramienta inicial de orquestación del agente analítico;
 - Python descargará archivos desde RustFS usando metadata de MongoDB (`file_id`, `tenantId`, `source=s3`, `storageKey`);
-- CSV/XLS/XLSX se cargarán en DuckDB;
-- Excel se leerá con `openpyxl` vía pandas;
+- CSV se cargará inicialmente con DuckDB `read_csv_auto`;
+- Excel se leerá inicialmente con `openpyxl` vía pandas, una tabla por hoja;
+- no se intentará resolver todos los CSV/Excel mal formados en el MVP: el input tabular debe ser razonablemente limpio por parte del usuario;
+- si `read_csv_auto` u `openpyxl` no pueden leer un archivo, Analitrics debe devolver un error específico del archivo y del paso de ingesta, no un error genérico del flujo completo;
+- como tercera vía futura, cuando fallen `read_csv_auto` y `openpyxl`, se evaluará un flujo robusto de normalización/conversión con herramientas externas como LibreOffice headless, parsers alternativos o detección avanzada de estructura antes de cargar a DuckDB;
 - NL-SQL generará SQL DuckDB;
 - `sqlglot` validará SQL de solo lectura antes de ejecutar;
 - el flujo incluirá una revisión del LLM sobre su propia respuesta: validación de alcance, plan/generación SQL, validación, ejecución, respuesta, crítica, ajuste final y generación de especificación de gráfico cuando aplique.
@@ -199,6 +203,27 @@ Herramientas controladas iniciales:
 - `compose_answer`: redacta respuesta usando solo resultados;
 - `critique_answer`: revisa consistencia de la respuesta;
 - `generate_chart_spec`: genera una especificación de gráfico cuando los resultados lo justifiquen.
+
+Salida visual inicial:
+
+- el agente puede devolver `chart_spec` en formato Vega-Lite cuando los resultados lo justifiquen;
+- en el MVP inmediato, LibreChat recibirá `chart_spec` como traza nativa `analitrics_chart`, junto con `analitrics_context` y `analitrics_sql`;
+- esta traza permite auditar qué gráfico se propuso sin tocar todavía el frontend;
+- la renderización visual embebida del gráfico en el chat queda como siguiente mejora de UI.
+
+Evolución a dashboard:
+
+- un chart aprobado por el usuario podrá convertirse en widget persistente;
+- el widget debe guardar, como mínimo:
+  - SQL validado;
+  - conexión/dataset origen;
+  - `chart_spec`;
+  - filtros;
+  - política de refresco (`refresh policy`);
+  - tenantId, userId, conversationId/messageId/runId de origen;
+- el widget debe vivir fuera del chat en una vista de dashboards, pero conservar lineage hacia la conversación y SQL que lo generó;
+- para archivos cargados, el widget debe poder reconstruirse desde RustFS + Postgres control plane + DuckDB cache derivada;
+- para bases de datos futuras, el widget debe apuntar a la conexión/dataset de solo lectura correspondiente sin mezclar catálogos con archivos hasta diseñar esa reconciliación.
 
 Regla:
 
@@ -237,11 +262,11 @@ Principio:
 - `userId`: identifica al usuario que ejecuta la pregunta;
 - `conversationId`: aísla el contexto de análisis del chat;
 - `messageId`: permite asociar una pregunta/respuesta y sus archivos adjuntos;
-- `analysisSessionId`: identifica el estado analítico reutilizable dentro de una conversación.
+- `analysisSessionId` no será usado como identificador operativo del MVP; el estado analítico debe colgar siempre de `conversationId`.
 
 Cache de procesamiento:
 
-- para el MVP, DuckDB debe operar como cache analítica aislada por `tenantId + conversationId` o por `tenantId + analysisSessionId`;
+- para el MVP, DuckDB debe operar como cache analítica aislada por `tenantId + userId + conversationId`;
 - no se debe reprocesar cada archivo en cada mensaje;
 - cada archivo procesado debe registrarse con `file_id`, `storageKey`, `filename`, `mimeType`, tamaño, hash/checksum si existe, tablas DuckDB generadas y timestamp de procesamiento;
 - en cada nuevo mensaje solo se procesan archivos nuevos o archivos cuyo hash cambió;
@@ -284,16 +309,37 @@ Retención:
 
 - para el MVP local, los `.duckdb` y catálogos temporales pueden vivir en disco persistente bajo una ruta de Analitrics, separados por tenant y conversación;
 - a futuro, la metadata de memoria analítica debe moverse a Postgres de control plane;
-- debe existir una política para expirar sesiones analíticas antiguas sin borrar los archivos originales de RustFS;
-- borrar o expirar una cache DuckDB debe forzar reprocesamiento desde RustFS, no pérdida de datos fuente.
+- no debe existir TTL normal para borrar `.duckdb` de chats activos;
+- el `.duckdb` se borra cuando el usuario borra explícitamente el chat asociado;
+- una limpieza futura solo podrá borrar caches huérfanas: chats inexistentes, usuarios inexistentes o rutas sin registro en control plane.
 
 Implementación MVP actual:
 
-- `analitrics-app/scripts/agent_file.py` acepta `tenantId`, `userId`, `conversationId`, `messageId` y `analysisSessionId` como argumentos operativos;
-- si existe `analysisSessionId` o `conversationId`, el agente crea o reutiliza una cache DuckDB bajo `/var/analitrics/analytics/cache/<tenant>/<session>.duckdb`;
+- el agente modular `analitrics_agent` acepta `tenantId`, `userId`, `conversationId` y `messageId` como argumentos operativos;
+- el agente crea o reutiliza una cache DuckDB bajo `/var/analitrics/analytics/cache/<tenant>/<user>/<conversationId>.duckdb`;
 - MongoDB se usa temporalmente para guardar metadata de sesión en `analitrics_analysis_sessions` y auditoría de corridas en `analitrics_agent_runs`;
 - esta persistencia en MongoDB es una solución MVP local, no el control plane definitivo;
 - los archivos originales siguen viviendo en RustFS y la cache DuckDB debe poder reconstruirse desde esos objetos.
+- cuando LibreChat borra un archivo tabular, Analitrics debe invalidar inmediatamente el catálogo/perfiles asociados en Postgres (`active=false`);
+- la tabla física dentro del `.duckdb` puede permanecer hasta que se borre el chat, porque un mismo `.duckdb` puede contener tablas derivadas de varios archivos;
+- una tabla invalidada no debe volver al contexto analítico ni a la lista de tablas permitidas para SQL, aunque siga físicamente presente en la cache.
+- `analytics-agent` expone un contexto gerencial del chat desde Postgres para UI lateral: archivos, tablas, columnas, filas, estado de cache y timestamps;
+- LibreChat consume ese contexto en un panel derecho del chat;
+- los límites iniciales del MVP son configurables por entorno: chats activos por usuario, preguntas por chat y peso máximo por archivo.
+
+Endurecimiento del MVP:
+
+- `analytics-agent` debe usar un usuario S3 dedicado de solo lectura, diferente a las credenciales root usadas por LibreChat para subir archivos;
+- `analytics-agent` no debe heredar ni usar `RUSTFS_ACCESS_KEY_ID`/`RUSTFS_SECRET_ACCESS_KEY`; si faltan `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, el flujo debe fallar explícitamente;
+- las rutas DuckDB deben estar aisladas por `tenantId`, `userId` y `conversationId`, y deben validarse para permanecer bajo `ANALITRICS_CACHE_DIR`;
+- las descargas desde RustFS deben escribirse solo dentro de un directorio temporal hijo validado;
+- la metadata de MongoDB debe resolver archivos por `tenantId`, `userId`, `source=s3` y `file_id`/`filename`;
+- el `storageKey` debe coincidir con la ruta esperada del usuario autenticado (`t/<tenant>/uploads/<user>/...`);
+- el SQL generado por el LLM debe ser validado como consulta de solo lectura antes de ejecutarse;
+- quedan bloqueadas operaciones SQL de escritura, DDL, `COPY`, `ATTACH`, `INSTALL`, `LOAD`, `PRAGMA` y funciones de lectura arbitraria de archivos como `read_csv`, `read_json`, `read_parquet` o `glob`;
+- el agente no debe exponer shell ni Python arbitrario al usuario;
+- el contenedor del agente debe ejecutarse con filesystem raíz de solo lectura, `/tmp` efímero, sin capabilities Linux y con `no-new-privileges`;
+- a futuro se implementará un sandbox efímero por ejecución para permitir habilidades controladas de código, gráficos y análisis avanzados sin darle al agente acceso permanente al estado.
 
 Separación futura explícita:
 

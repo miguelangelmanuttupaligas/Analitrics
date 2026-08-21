@@ -6,6 +6,8 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY scripts ./scripts
+COPY alembic.ini ./
+COPY migrations ./migrations
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONWARNINGS=ignore
