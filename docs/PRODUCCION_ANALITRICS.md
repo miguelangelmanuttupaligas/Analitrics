@@ -49,6 +49,78 @@ El gateway espera certificados en:
 
 En produccion deben ser certificados validos para `analitrics.com`. El certificado autofirmado local no debe usarse en la VM publica.
 
+### Obtener certificado con Certbot
+
+Primero validar que el DNS apunte a la VM:
+
+```text
+analitrics.com -> IP_PUBLICA_VM
+```
+
+Instalar Certbot:
+
+```bash
+sudo apt update
+sudo apt install certbot
+```
+
+Emitir certificado con modo standalone. El puerto `80` debe estar libre temporalmente:
+
+```bash
+sudo certbot certonly --standalone -d analitrics.com
+```
+
+Certbot genera:
+
+```text
+/etc/letsencrypt/live/analitrics.com/fullchain.pem
+/etc/letsencrypt/live/analitrics.com/privkey.pem
+```
+
+### Opcion simple: copiar certificados
+
+Funciona con el `docker-compose.yml` actual:
+
+```bash
+sudo mkdir -p /var/analitrics/librechat/certs
+
+sudo cp /etc/letsencrypt/live/analitrics.com/fullchain.pem \
+  /var/analitrics/librechat/certs/analitrics.crt
+
+sudo cp /etc/letsencrypt/live/analitrics.com/privkey.pem \
+  /var/analitrics/librechat/certs/analitrics.key
+
+sudo chmod 644 /var/analitrics/librechat/certs/analitrics.crt
+sudo chmod 600 /var/analitrics/librechat/certs/analitrics.key
+```
+
+Esta opcion requiere volver a copiar los archivos cuando Certbot renueve el certificado.
+
+### Opcion recomendada: montar `/etc/letsencrypt`
+
+No basta con crear symlinks desde `/var/analitrics/librechat/certs` hacia `/etc/letsencrypt/live/...`, porque el contenedor solo ve las rutas montadas. El symlink puede quedar roto dentro de Docker.
+
+Para evitar copias manuales, montar `/etc/letsencrypt` en el gateway como solo lectura:
+
+```yaml
+gateway:
+  volumes:
+    - /etc/letsencrypt:/etc/letsencrypt:ro
+```
+
+Y cambiar el Nginx del gateway para leer directamente:
+
+```nginx
+ssl_certificate /etc/letsencrypt/live/analitrics.com/fullchain.pem;
+ssl_certificate_key /etc/letsencrypt/live/analitrics.com/privkey.pem;
+```
+
+Con este enfoque, la renovacion de Certbot queda disponible para el contenedor. Luego de renovar, recargar o reiniciar el gateway:
+
+```bash
+docker restart analitrics-analitrics-gateway
+```
+
 ## Orden de arranque
 
 ```bash
