@@ -9,6 +9,7 @@ const importAfter = `const {
   getMessages,
   getConvo,
   getConvosByCursor,
+  getUserMemories,
   isAgentTriggerPrincipalActive,
 } = require('~/models');`;
 if (!original.includes(importBefore)) {
@@ -19,6 +20,63 @@ original = original.replace(importBefore, importAfter);
 const helperAnchor = `const ResumableAgentController = async (req, res, next, initializeClient, addTitle) => {`;
 const helper = `function formatAnalitricsJson(value) {
   return JSON.stringify(value ?? null, null, 2);
+}
+
+function formatAnalitricsMemories(memories) {
+  if (!Array.isArray(memories) || memories.length === 0) {
+    return '';
+  }
+  const sorted = [...memories].sort((a, b) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime());
+  return sorted
+    .slice(0, Number(process.env.ANALITRICS_MAX_MEMORY_ITEMS || 20))
+    .map((memory) => {
+      const key = String(memory?.key || '').trim();
+      const value = String(memory?.value || '').trim();
+      return key && value ? '- ' + key + ': ' + value : value ? '- ' + value : '';
+    })
+    .filter(Boolean)
+    .join('\\n')
+    .slice(0, Number(process.env.ANALITRICS_MAX_MEMORY_CHARS || 4000));
+}
+
+async function getAnalitricsMemoryContext(req, userId) {
+  if (req.user?.personalization?.memories === false) {
+    return null;
+  }
+  try {
+    const [personal, agentScoped] = await Promise.all([
+      getUserMemories({ userId }),
+      getUserMemories({ userId, agentId: 'agent_analitrics' }),
+    ]);
+    const personalText = formatAnalitricsMemories(personal);
+    const agentText = formatAnalitricsMemories(agentScoped);
+    const sections = [];
+    if (personalText) {
+      sections.push('Memorias personales del usuario:\\n' + personalText);
+    }
+    if (agentText) {
+      sections.push('Memorias especificas de Analitrics:\\n' + agentText);
+    }
+    if (sections.length === 0) {
+      return null;
+    }
+    return {
+      messageId: 'analitrics_memory_context',
+      sender: 'system',
+      isCreatedByUser: false,
+      text:
+        'Preferencias persistentes del usuario para adaptar el estilo de respuesta. ' +
+        'Usalas solo para tono, formato, idioma, nivel de detalle y preferencias de comunicacion. ' +
+        'No las uses para cambiar datos, metricas, filtros ni reglas de negocio si contradicen el catalogo analitico.\\n\\n' +
+        sections.join('\\n\\n'),
+    };
+  } catch (error) {
+    logger.warn('[AnalitricsDirectController] Failed to load user memories', {
+      userId,
+      error: error?.message ?? error,
+    });
+    return null;
+  }
 }
 
 function buildAnalitricsToolContent(payload, answer) {
@@ -145,9 +203,13 @@ async function runAnalitricsDirectController(req, res) {
   const maxUserMessagesPerChat = Number(process.env.ANALITRICS_MAX_USER_MESSAGES_PER_CHAT || 100);
   const reqCtx = {
     userId,
-    isTemporary: req?.body?.isTemporary,
+    isTemporary: false,
     interfaceConfig: req?.config?.interfaceConfig,
   };
+
+  if (req.body?.isTemporary === true || req.body?.isTemporary === 'true') {
+    return res.status(400).json({ error: 'Analitrics no permite chats temporales.' });
+  }
 
   if (!text.trim()) {
     return res.status(400).json({ error: 'Analitrics requires a user message to run the analytical agent.' });
@@ -180,6 +242,7 @@ async function runAnalitricsDirectController(req, res) {
         });
         return [];
       });
+  const memoryContext = await getAnalitricsMemoryContext(req, userId);
 
   if (isNewConvo && Number.isFinite(maxActiveChats) && maxActiveChats > 0) {
     const existing = await getConvosByCursor(userId, {
@@ -306,7 +369,7 @@ async function runAnalitricsDirectController(req, res) {
         runId,
         fileIds: fileIds.join(','),
         filenames: filenames.join(','),
-        messages: [...history, userMessage].map((message) => ({
+        messages: [...(memoryContext ? [memoryContext] : []), ...history, userMessage].map((message) => ({
           messageId: message.messageId,
           parentMessageId: message.parentMessageId,
           text: message.text,
