@@ -24,6 +24,7 @@ class SqlGenerator(Protocol):
         profiles: list[dict[str, Any]],
         context_messages: list[dict[str, Any]] | None = None,
         catalog_feedback: list[dict[str, Any]] | None = None,
+        analytical_context: dict[str, Any] | None = None,
     ) -> SqlGenerationResult:
         ...
 
@@ -36,6 +37,7 @@ class SqlGenerator(Protocol):
         error: str,
         context_messages: list[dict[str, Any]] | None = None,
         catalog_feedback: list[dict[str, Any]] | None = None,
+        analytical_context: dict[str, Any] | None = None,
     ) -> SqlGenerationResult:
         ...
 
@@ -52,6 +54,7 @@ class LlmSqlGenerator:
         profiles: list[dict[str, Any]],
         context_messages: list[dict[str, Any]] | None = None,
         catalog_feedback: list[dict[str, Any]] | None = None,
+        analytical_context: dict[str, Any] | None = None,
     ) -> SqlGenerationResult:
         plan = self._llm_client.complete_json(
             system=GENERATE_SQL_SYSTEM_PROMPT,
@@ -59,6 +62,7 @@ class LlmSqlGenerator:
                 "question": question,
                 "available_data": self._schema_context_builder.build(files, profiles, catalog_feedback),
                 "conversation_context": context_messages or [],
+                "analytical_context": analytical_context or {},
             },
             model_env="ANALITRICS_NL_SQL_MODEL",
             default_model=env("ANALITRICS_DEFAULT_MODEL", "gpt-5.5"),
@@ -78,6 +82,7 @@ class LlmSqlGenerator:
         error: str,
         context_messages: list[dict[str, Any]] | None = None,
         catalog_feedback: list[dict[str, Any]] | None = None,
+        analytical_context: dict[str, Any] | None = None,
     ) -> SqlGenerationResult:
         repaired = self._llm_client.complete_json(
             system=REPAIR_SQL_SYSTEM_PROMPT,
@@ -85,6 +90,7 @@ class LlmSqlGenerator:
                 "question": question,
                 "available_data": self._schema_context_builder.build(files, profiles, catalog_feedback),
                 "conversation_context": context_messages or [],
+                "analytical_context": analytical_context or {},
                 "failed_sql": failed_sql,
                 "error": error,
             },

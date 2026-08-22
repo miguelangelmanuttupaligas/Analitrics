@@ -79,6 +79,90 @@ async function getAnalitricsMemoryContext(req, userId) {
   }
 }
 
+function cleanMermaidLabel(value) {
+  const text = String(value ?? '')
+    .replace(/[\\r\\n\\[\\]"]/g, ' ')
+    .replace(/\\s+/g, ' ')
+    .trim();
+  return text.length > 28 ? text.slice(0, 25) + '...' : text || '(sin valor)';
+}
+
+function toMermaidNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return 0;
+  }
+  return Number(number.toFixed(2));
+}
+
+function isNumericValue(value) {
+  return value !== null && value !== '' && Number.isFinite(Number(value));
+}
+
+function getVegaEncodingField(spec, channel) {
+  const encoding = spec && typeof spec === 'object' ? spec.encoding : null;
+  const field = encoding?.[channel]?.field;
+  return typeof field === 'string' && field ? field : null;
+}
+
+function inferMermaidFields(rows, chartSpec) {
+  const spec = chartSpec?.spec && typeof chartSpec.spec === 'object' ? chartSpec.spec : null;
+  const xField = getVegaEncodingField(spec, 'x');
+  const yField = getVegaEncodingField(spec, 'y');
+  const first = rows[0] || {};
+  const keys = Object.keys(first);
+  const numericKeys = keys.filter((key) => rows.some((row) => isNumericValue(row?.[key])));
+  const textKeys = keys.filter((key) => !numericKeys.includes(key));
+
+  if (xField && yField) {
+    const xIsNumeric = rows.some((row) => isNumericValue(row?.[xField]));
+    const yIsNumeric = rows.some((row) => isNumericValue(row?.[yField]));
+    if (xIsNumeric && !yIsNumeric) {
+      return { categoryField: yField, valueField: xField };
+    }
+    return { categoryField: xField, valueField: yField };
+  }
+
+  return {
+    categoryField: textKeys[0] || keys.find((key) => key !== numericKeys[0]) || keys[0],
+    valueField: numericKeys[0],
+  };
+}
+
+function buildAnalitricsChartPayload(payload) {
+  const chartSpec = payload?.chart_spec && typeof payload.chart_spec === 'object' ? payload.chart_spec : null;
+  const rows = Array.isArray(payload?.rows_preview) ? payload.rows_preview : [];
+  if (!chartSpec || chartSpec.chart_required !== true || rows.length === 0) {
+    return null;
+  }
+
+  const { categoryField, valueField } = inferMermaidFields(rows, chartSpec);
+  if (!categoryField || !valueField) {
+    return null;
+  }
+
+  const points = rows
+    .filter((row) => row && isNumericValue(row[valueField]))
+    .slice(0, 10)
+    .map((row) => ({
+      label: cleanMermaidLabel(row[categoryField]),
+      value: toMermaidNumber(row[valueField]),
+    }));
+  if (points.length === 0) {
+    return null;
+  }
+
+  return {
+    chart_required: true,
+    chart_type: chartSpec.chart_type === 'line' ? 'line' : 'bar',
+    title: cleanMermaidLabel((valueField || 'Valor') + ' por ' + (categoryField || 'categoría')),
+    category_field: categoryField,
+    value_field: valueField,
+    points,
+    reason: chartSpec.reason || '',
+  };
+}
+
 function buildAnalitricsToolContent(payload, answer) {
   const files = Array.isArray(payload?.files) ? payload.files : [];
   const tables = Array.isArray(payload?.tables) ? payload.tables : [];
@@ -165,30 +249,52 @@ function buildAnalitricsToolContent(payload, answer) {
     },
   ];
 
-  if (chartSpec?.chart_required === true || chartSpec?.spec) {
+  content.push({ type: 'text', text: answer });
+
+  const chartPayload = buildAnalitricsChartPayload(payload);
+  if (chartPayload) {
     content.push({
       type: 'tool_call',
       tool_call: {
         id: 'analitrics_chart_' + String(payload?.runId || crypto.randomUUID()).replace(/[^a-zA-Z0-9_-]/g, '_'),
         name: 'analitrics_chart',
         args: formatAnalitricsJson({
-          chart_required: chartSpec.chart_required === true,
-          reason: chartSpec.reason || '',
+          chart_type: chartPayload.chart_type,
+          point_count: chartPayload.points.length,
         }),
-        output: formatAnalitricsJson(chartSpec),
+        output: formatAnalitricsJson(chartPayload),
         progress: 1,
       },
     });
   }
 
-  content.push({ type: 'text', text: answer });
   return content;
+}
+
+function mapAnalitricsProgress(message) {
+  const value = String(message || '').toLowerCase();
+  if (value.includes('resolviendo archivos') || value.includes('cargando duckdb')) {
+    return 'Preparando datos...';
+  }
+  if (
+    value.includes('validando alcance') ||
+    value.includes('generando sql') ||
+    value.includes('ejecutando consulta')
+  ) {
+    return 'Consultando datos...';
+  }
+  if (value.includes('redactando respuesta') || value.includes('generando gráfico') || value.includes('generando grafico')) {
+    return 'Redactando respuesta...';
+  }
+  return '';
 }
 
 async function runAnalitricsDirectController(req, res) {
   const { endpointOption, conversationId: reqConversationId, parentMessageId = null } = req.body;
   const text = typeof req.body.text === 'string' ? req.body.text : '';
   const userId = String(req.user.id);
+  const agentId = process.env.ANALITRICS_AGENT_ID || 'agent_analitrics';
+  const spec = process.env.ANALITRICS_MODEL_SPEC || 'analitrics';
   const isNewConvo = !reqConversationId || reqConversationId === 'new';
   const conversationId = isNewConvo ? crypto.randomUUID() : reqConversationId;
   const streamId = conversationId;
@@ -290,6 +396,8 @@ async function runAnalitricsDirectController(req, res) {
     isCreatedByUser: true,
     user: userId,
     endpoint,
+    agent_id: agentId,
+    spec,
     ...(files.length > 0 && { files }),
   };
 
@@ -300,6 +408,8 @@ async function runAnalitricsDirectController(req, res) {
     endpoint,
     iconURL: getEndpointIconURL(req, endpointOption),
     model,
+    agent_id: agentId,
+    spec,
     responseMessageId,
     userMessage: {
       messageId: userMessage.messageId,
@@ -312,23 +422,74 @@ async function runAnalitricsDirectController(req, res) {
 
   res.json({ streamId, conversationId, status: 'started' });
 
+  const messageStepId = 'analitrics_message_' + responseMessageId;
+  let messageStepStarted = false;
+  const emitMessageStep = async () => {
+    if (messageStepStarted) {
+      return;
+    }
+    messageStepStarted = true;
+    await GenerationJobManager.emitChunk(streamId, {
+      event: 'on_run_step',
+      data: {
+        id: messageStepId,
+        runId: responseMessageId,
+        agentId,
+        index: 0,
+        stepIndex: 0,
+        status: 'in_progress',
+        created_at: Date.now(),
+        usage: null,
+        type: 'message_creation',
+        stepDetails: {
+          type: 'message_creation',
+          message_creation: {
+            message_id: responseMessageId,
+            content_type: 'text',
+            phase: 'final_answer',
+          },
+        },
+      },
+    });
+  };
+
   const emitTextDelta = async (chunk) => {
     if (!chunk) {
       return;
     }
+    await emitMessageStep();
     await GenerationJobManager.emitChunk(streamId, {
       event: 'on_message_delta',
-      data: { delta: { content: { type: 'text', text: chunk } } },
+      data: {
+        id: messageStepId,
+        delta: {
+          content: [{ type: 'text', text: chunk }],
+        },
+      },
     });
   };
 
+  const emitTextBlock = async (textBlock) => {
+    for (const part of String(textBlock || '').split(/(\\n)/)) {
+      if (part) {
+        await emitTextDelta(part);
+      }
+    }
+  };
+
+  let answer = '';
+  let hasAnswerTokens = false;
+  let finalPayload = null;
+
   const emittedProgress = new Set();
   const emitStatusText = async (message) => {
-    if (!message || emittedProgress.has(message)) {
+    const displayMessage = mapAnalitricsProgress(message);
+    if (!displayMessage || emittedProgress.has(displayMessage)) {
       return;
     }
-    emittedProgress.add(message);
-    await emitTextDelta('\\n' + message + '\\n');
+    emittedProgress.add(displayMessage);
+    const statusLine = displayMessage + '\\n';
+    await emitTextDelta(statusLine);
   };
 
   const emitProgress = async (message) => {
@@ -341,9 +502,6 @@ async function runAnalitricsDirectController(req, res) {
       data: { delta: { step_details: { type: 'message_creation', message_creation: { message } } } },
     });
   };
-
-  let answer = '';
-  let finalPayload = null;
 
   try {
     await GenerationJobManager.emitChunk(streamId, {
@@ -373,6 +531,7 @@ async function runAnalitricsDirectController(req, res) {
           messageId: message.messageId,
           parentMessageId: message.parentMessageId,
           text: message.text,
+          content: message.content,
           sender: message.sender,
           isCreatedByUser: message.isCreatedByUser,
           files: message.files,
@@ -418,13 +577,15 @@ async function runAnalitricsDirectController(req, res) {
           await emitProgress(event.message);
         } else if (event.type === 'token') {
           answer += event.delta || '';
+          hasAnswerTokens = true;
           await emitTextDelta(event.delta || '');
         } else if (event.type === 'final') {
           const payload = event.payload || {};
           finalPayload = payload;
-          if (!answer && typeof payload.answer === 'string') {
-            answer = payload.answer;
-            await emitTextDelta(answer);
+          if (!hasAnswerTokens && typeof payload.answer === 'string') {
+            answer += payload.answer;
+            hasAnswerTokens = true;
+            await emitTextBlock(payload.answer);
           }
         } else if (event.type === 'error') {
           throw new Error(event.error || 'Analitrics agent stream failed');
@@ -435,7 +596,7 @@ async function runAnalitricsDirectController(req, res) {
       }
     }
 
-    if (!answer.trim()) {
+    if (!hasAnswerTokens && !answer.trim()) {
       answer = 'No pude generar una respuesta analítica para esta solicitud.';
     }
 
@@ -450,9 +611,10 @@ async function runAnalitricsDirectController(req, res) {
       user: userId,
       endpoint,
       model,
+      spec,
       unfinished: false,
       error: false,
-      ...(req.body?.agent_id && { agent_id: req.body.agent_id }),
+      agent_id: agentId,
     };
 
     await saveMessage(reqCtx, responseMessage, {
@@ -465,6 +627,7 @@ async function runAnalitricsDirectController(req, res) {
         conversationId,
         endpoint,
         model,
+        spec,
         title: req.body.title || text.slice(0, 80) || 'Analitrics',
       },
       { context: 'api/server/controllers/agents/request.js - analitrics direct conversation' },
@@ -473,8 +636,25 @@ async function runAnalitricsDirectController(req, res) {
       conversationId,
       endpoint,
       model,
+      spec,
       title: req.body.title || text.slice(0, 80) || 'Analitrics',
     };
+
+    if (messageStepStarted) {
+      await GenerationJobManager.emitChunk(streamId, {
+        event: 'on_run_step_closed',
+        data: {
+          id: messageStepId,
+          index: 0,
+          stepIndex: 0,
+          type: 'message_creation',
+          status: 'completed',
+          runId: responseMessageId,
+          agentId,
+          closed_at: Date.now(),
+        },
+      });
+    }
 
     await GenerationJobManager.emitDone(streamId, {
       final: true,

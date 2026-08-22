@@ -35,6 +35,15 @@ const checkAgentResourceAccess = canAccessAgentFromBody({
   requiredPermission: PermissionBits.VIEW,
 });
 
+const enforceAnalitricsAgent = (req, _res, next) => {
+  if (process.env.ANALITRICS_DIRECT_AGENT === 'true') {
+    req.body.endpoint = 'agents';
+    req.body.spec = process.env.ANALITRICS_MODEL_SPEC || 'analitrics';
+    req.body.agent_id = process.env.ANALITRICS_AGENT_ID || 'agent_analitrics';
+  }
+  next();
+};
+
 /**
  * Replay the paused turn's graph-determining config onto a resume request BEFORE the
  * rest of the chain (PII filter, agent-access, buildEndpointOption) reads it. The client
@@ -72,6 +81,7 @@ router.use(restoreResumeContext);
 router.use(createMessageFilterPii({ getConfig: (req) => req.config?.messageFilter?.pii }));
 router.use(moderateText);
 router.use(checkAgentAccess);
+router.use(enforceAnalitricsAgent);
 router.use(checkAgentResourceAccess);
 router.use(validateConvoAccess);
 router.use(guardSubagentThreadTurn);

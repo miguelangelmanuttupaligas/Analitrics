@@ -16,6 +16,13 @@ export type AnalitricsColumn =
       type?: string;
       nullable?: boolean;
       sample?: unknown;
+      distinct_count?: number | null;
+      null_ratio?: number | null;
+      sample_values?: unknown[];
+      min?: number | null;
+      max?: number | null;
+      avg?: number | null;
+      sum?: number | null;
     };
 
 export type AnalitricsTable = {

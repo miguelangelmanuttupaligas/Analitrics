@@ -33,6 +33,7 @@ class AgentState(TypedDict, total=False):
     tables: list[str]
     profiles: list[dict[str, Any]]
     catalog_feedback: list[dict[str, Any]]
+    analytical_context: dict[str, Any]
     in_scope: bool
     scope_reason: str
     plan: dict[str, str]
@@ -65,6 +66,7 @@ def state_output(request: AgentRequest, state: AgentState) -> dict[str, Any]:
         "files": [asdict(file) for file in files],
         "tables": state.get("profiles"),
         "catalog_feedback": state.get("catalog_feedback") or [],
+        "analytical_context": state.get("analytical_context") or {},
         "plan": state.get("plan"),
         "sql": state.get("sql"),
         "row_count": len(state.get("rows") or []),

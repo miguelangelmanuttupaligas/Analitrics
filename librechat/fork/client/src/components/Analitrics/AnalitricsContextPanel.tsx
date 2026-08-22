@@ -1,14 +1,14 @@
 import { useState, type ReactNode } from 'react';
 import {
   AlertCircle,
-  BriefcaseBusiness,
   CalendarDays,
-  ChevronDown,
   CheckCircle2,
+  FileSpreadsheet,
   PencilLine,
   RefreshCw,
   Sigma,
   Tags,
+  X,
   type LucideIcon,
 } from 'lucide-react';
 import { Constants } from 'librechat-data-provider';
@@ -29,17 +29,32 @@ type AnalitricsContextPanelProps = {
 type NormalizedColumn = {
   name: string;
   type: string;
+  distinctCount?: number | null;
+  average?: number | null;
+  sum?: number | null;
+  min?: number | null;
+  max?: number | null;
 };
 
 type DatasetInsight = {
   fileId: string;
   name: string;
+  filename?: string | null;
   rowCount: number;
   columnCount: number;
   metricCandidates: string[];
   dateCandidates: string[];
   segmentCandidates: string[];
   numericCount: number;
+  columns: NormalizedColumn[];
+};
+
+type ExecutiveKpi = {
+  key: string;
+  label: string;
+  value: string;
+  detail: string;
+  confidence: 'known' | 'estimated' | 'pending';
 };
 
 type FeedbackSource = {
@@ -54,6 +69,8 @@ type CatalogFeedbackStep = {
   prompt: string;
   placeholder: string;
 };
+
+type PanelView = 'general' | 'catalog';
 
 const feedbackSteps: CatalogFeedbackStep[] = [
   {
@@ -121,7 +138,15 @@ const normalizeColumn = (column: AnalitricsColumn): NormalizedColumn => {
   if (typeof column === 'string') {
     return { name: column, type: '' };
   }
-  return { name: column?.name || 'Campo', type: column?.type || '' };
+  return {
+    name: column?.name || 'Campo',
+    type: column?.type || '',
+    distinctCount: column?.distinct_count,
+    average: column?.avg,
+    sum: column?.sum,
+    min: column?.min,
+    max: column?.max,
+  };
 };
 
 const hasAnyTerm = (name: string, terms: string[]) =>
@@ -187,6 +212,120 @@ const isLikelySegment = (name: string, type?: string) =>
 
 const unique = (items: string[]) => [...new Set(items.filter(Boolean))];
 
+const currencyFormat = new Intl.NumberFormat('es-PE', {
+  maximumFractionDigits: 0,
+});
+
+const compactText = (value: string, fallback = 'Sin definición guardada') =>
+  value.trim().length > 0 ? value.trim() : fallback;
+
+const latestFeedbackForSteps = (feedback: AnalitricsFeedback[], steps: number[]) =>
+  feedback
+    .filter((item) => steps.includes(item.step) && item.content?.trim())
+    .sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')))[0];
+
+const normalizeForMatch = (value: string) =>
+  value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9_ ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const findColumnByTerms = (columns: NormalizedColumn[], terms: string[]) =>
+  columns.find((column) => hasAnyTerm(normalizeForMatch(column.name), terms));
+
+const formatMetricValue = (value?: number | null) => {
+  if (value == null || !Number.isFinite(value)) {
+    return 'Pendiente';
+  }
+  return Math.abs(value) >= 1000 ? currencyFormat.format(value) : formatNumber(value);
+};
+
+const preferredMetricColumn = (columns: NormalizedColumn[]) => {
+  const numericColumns = columns.filter((column) => isNumericType(column.type));
+  return (
+    numericColumns.find((column) => isLikelyKpi(column.name, column.type) && column.sum != null) ||
+    numericColumns.find((column) => column.sum != null) ||
+    numericColumns.find((column) => column.average != null) ||
+    numericColumns[0]
+  );
+};
+
+const preferredDimensionColumn = (columns: NormalizedColumn[]) =>
+  findColumnByTerms(columns, ['curso', 'producto', 'cliente', 'canal', 'categoria', 'pais', 'sede']) ||
+  columns.find((column) => isLikelySegment(column.name, column.type) && column.distinctCount != null) ||
+  columns.find((column) => !isNumericType(column.type) && !isDateType(column.type) && column.distinctCount != null);
+
+const buildExecutiveKpis = (dataset: DatasetInsight | undefined): ExecutiveKpi[] => {
+  const columns = dataset?.columns ?? [];
+  const metricColumn = preferredMetricColumn(columns);
+  const dimensionColumn = preferredDimensionColumn(columns);
+  const dateCount = columns.filter((column) => isDateType(column.type)).length;
+
+  return [
+    {
+      key: 'rows',
+      label: 'Registros',
+      value: formatNumber(dataset?.rowCount ?? 0),
+      detail: 'Filas activas del archivo seleccionado.',
+      confidence: dataset?.rowCount ? 'known' : 'pending',
+    },
+    {
+      key: 'columns',
+      label: 'Variables',
+      value: formatNumber(dataset?.columnCount ?? 0),
+      detail: 'Campos disponibles para análisis.',
+      confidence: dataset?.columnCount ? 'known' : 'pending',
+    },
+    {
+      key: 'main_metric',
+      label: metricColumn?.sum != null ? `Total ${metricColumn.name}` : metricColumn?.name || 'Indicador principal',
+      value: formatMetricValue(metricColumn?.sum ?? metricColumn?.average),
+      detail:
+        metricColumn?.sum != null
+          ? `Suma detectada en ${metricColumn.name}`
+          : metricColumn?.average != null
+            ? `Promedio detectado en ${metricColumn.name}`
+            : 'Confirma el indicador principal.',
+      confidence: metricColumn?.sum != null || metricColumn?.average != null ? 'estimated' : 'pending',
+    },
+    {
+      key: 'main_dimension',
+      label: dimensionColumn?.name || 'Dimensión principal',
+      value: dimensionColumn?.distinctCount != null ? formatNumber(dimensionColumn.distinctCount) : 'Pendiente',
+      detail:
+        dimensionColumn?.distinctCount != null
+          ? `Valores únicos detectados en ${dimensionColumn.name}`
+          : dateCount > 0
+            ? `${dateCount} campo(s) temporal(es) detectados.`
+            : 'Confirma el corte gerencial principal.',
+      confidence: dimensionColumn?.distinctCount != null ? 'estimated' : 'pending',
+    },
+  ];
+};
+
+const buildExecutiveSummary = (dataset: DatasetInsight | undefined, feedback: AnalitricsFeedback[]) => {
+  if (!dataset) {
+    return 'Selecciona un archivo procesado para ver su lectura ejecutiva.';
+  }
+  const metric = preferredMetricColumn(dataset.columns);
+  const dimension = preferredDimensionColumn(dataset.columns);
+  const userDefinition = latestFeedbackForSteps(feedback, [1, 2, 3, 4, 6])?.content;
+  const parts = [
+    `${dataset.filename || dataset.name} contiene ${formatNumber(dataset.rowCount)} registros y ${formatNumber(dataset.columnCount)} variables.`,
+    dataset.metricCandidates.length > 0
+      ? `Se detectan indicadores como ${dataset.metricCandidates.slice(0, 3).join(', ')}.`
+      : 'Aún falta confirmar los indicadores de negocio.',
+    dimension ? `El corte gerencial más evidente es ${dimension.name}.` : undefined,
+    metric ? `El indicador numérico más útil para iniciar es ${metric.name}.` : undefined,
+    userDefinition ? `Definición aportada: ${userDefinition}` : undefined,
+  ].filter(Boolean);
+
+  return parts.slice(0, 4).join(' ');
+};
+
 const buildDatasetInsights = (
   tables: AnalitricsTable[],
   profiles: AnalitricsProfile[],
@@ -222,6 +361,7 @@ const buildDatasetInsights = (
     return {
       fileId: key,
       name: businessSourceName(index),
+      filename: group.find((profile) => profile.source_filename)?.source_filename,
       rowCount: group.reduce((total, profile) => total + Number(profile.row_count || 0), 0),
       columnCount: columns.length,
       metricCandidates: unique(
@@ -238,33 +378,54 @@ const buildDatasetInsights = (
           .map((column) => column.name),
       ).slice(0, 5),
       numericCount: numericColumns.length,
+      columns,
     };
   });
 };
 
-function Metric({ label, value }: { label: string; value: number | undefined | null }) {
+function KpiCard({ kpi }: { kpi: ExecutiveKpi }) {
+  const statusLabel =
+    kpi.confidence === 'known' ? 'Validado' : kpi.confidence === 'estimated' ? 'Estimado' : 'Pendiente';
+
   return (
-    <div className="rounded-lg border border-border-light bg-surface-secondary px-3 py-2">
-      <div className="text-lg font-semibold text-text-primary">{formatNumber(value)}</div>
-      <div className="mt-0.5 text-xs text-text-secondary">{label}</div>
-    </div>
+    <article className="rounded-lg border border-border-light bg-surface-secondary p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h3 className="truncate text-xs font-medium text-text-secondary">{kpi.label}</h3>
+          <p className="mt-1 truncate text-xl font-semibold text-text-primary" title={kpi.value}>
+            {kpi.value}
+          </p>
+        </div>
+        <span className="shrink-0 rounded-md border border-border-light px-1.5 py-0.5 text-[10px] text-text-secondary">
+          {statusLabel}
+        </span>
+      </div>
+      <p className="mt-2 line-clamp-2 text-xs text-text-secondary" title={kpi.detail}>
+        {kpi.detail}
+      </p>
+    </article>
   );
 }
 
 function InsightSection({
   icon: Icon,
   title,
+  action,
   children,
 }: {
   icon: LucideIcon;
   title: string;
+  action?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <section className="rounded-lg border border-border-light bg-surface-primary-alt p-3 text-sm">
-      <div className="mb-2 flex items-center gap-2 font-medium text-text-primary">
-        <Icon className="size-4 text-text-secondary" aria-hidden="true" />
-        <h3>{title}</h3>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2 font-medium text-text-primary">
+          <Icon className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
+          <h3 className="truncate">{title}</h3>
+        </div>
+        {action}
       </div>
       <div className="text-text-secondary">{children}</div>
     </section>
@@ -298,7 +459,7 @@ function FeedbackHistory({ items }: { items: AnalitricsFeedback[] }) {
 
   return (
     <div className="space-y-2">
-      {items.slice(0, 2).map((item) => (
+      {items.slice(0, 3).map((item) => (
         <div key={item.feedbackId ?? `${item.step}-${item.updatedAt}`} className="rounded-md bg-surface-secondary p-2">
           <p className="line-clamp-3 text-xs text-text-secondary">{item.content}</p>
         </div>
@@ -346,6 +507,93 @@ function SourceSelector({
       <p className="mt-2 text-xs text-text-secondary">
         Los aportes se guardarán solo para {selected?.filename || 'el archivo seleccionado'}.
       </p>
+    </div>
+  );
+}
+
+function ExecutiveFileSelector({
+  sources,
+  selectedFileId,
+  onChange,
+}: {
+  sources: FeedbackSource[];
+  selectedFileId: string;
+  onChange: (fileId: string) => void;
+}) {
+  if (sources.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-lg border border-border-light bg-surface-secondary p-3">
+      <label className="text-xs font-medium text-text-primary" htmlFor="analitrics-executive-source">
+        Archivo analizado
+      </label>
+      <select
+        id="analitrics-executive-source"
+        className="mt-2 w-full rounded-lg border border-border-light bg-surface-primary px-3 py-2 text-sm text-text-primary outline-none transition-colors focus:border-border-heavy"
+        value={selectedFileId}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        {sources.map((source) => (
+          <option key={source.fileId} value={source.fileId}>
+            {source.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function ViewSwitch({
+  activeView,
+  onChange,
+}: {
+  activeView: PanelView;
+  onChange: (view: PanelView) => void;
+}) {
+  const items: Array<{
+    id: PanelView;
+    title: string;
+    icon: LucideIcon;
+  }> = [
+    {
+      id: 'general',
+      title: 'General',
+      icon: FileSpreadsheet,
+    },
+    {
+      id: 'catalog',
+      title: 'Catálogo',
+      icon: PencilLine,
+    },
+  ];
+
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {items.map((item) => {
+        const Icon = item.icon;
+        const active = activeView === item.id;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            className={cn(
+              'rounded-lg border p-3 text-left transition-colors focus:outline-none focus:ring-2 focus:ring-border-heavy',
+              active
+                ? 'border-border-heavy bg-surface-secondary text-text-primary'
+                : 'border-border-light bg-surface-primary-alt text-text-secondary hover:bg-surface-hover hover:text-text-primary',
+            )}
+            onClick={() => onChange(item.id)}
+            aria-pressed={active}
+          >
+            <div className="flex items-center gap-2">
+              <Icon className="size-4 shrink-0" aria-hidden="true" />
+              <span className="text-sm font-semibold">{item.title}</span>
+            </div>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -406,27 +654,32 @@ function CatalogFeedbackCard({
 
   return (
     <article className="rounded-lg border border-border-light bg-surface-primary-alt">
-      <button
-        type="button"
-        className="flex w-full items-start gap-2 p-3 text-left transition-colors hover:bg-surface-hover"
-        onClick={onToggle}
-        aria-expanded={expanded}
-      >
+      <div className="flex w-full items-start gap-2 p-3">
         <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-surface-secondary text-xs font-semibold text-text-primary">
           {step.step}
         </div>
         <div className="min-w-0 flex-1">
           <h4 className="text-sm font-medium text-text-primary">{step.label}</h4>
           <p className="mt-1 text-xs text-text-secondary">{step.prompt}</p>
+          {!expanded && (
+            <div className="mt-2">
+              <FeedbackHistory items={saved} />
+            </div>
+          )}
         </div>
         {saved.length > 0 && (
           <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-green-500" aria-label="Con aportes guardados" />
         )}
-        <ChevronDown
-          className={cn('mt-0.5 size-4 shrink-0 text-text-secondary transition-transform', expanded && 'rotate-180')}
-          aria-hidden="true"
-        />
-      </button>
+        <button
+          type="button"
+          className="rounded-md p-1.5 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus:outline-none focus:ring-2 focus:ring-border-heavy"
+          onClick={onToggle}
+          aria-label={expanded ? `Cerrar edición de ${step.label}` : `Editar ${step.label}`}
+          aria-expanded={expanded}
+        >
+          {expanded ? <X className="size-4" aria-hidden="true" /> : <PencilLine className="size-4" aria-hidden="true" />}
+        </button>
+      </div>
       {expanded && (
         <div className="border-t border-border-light p-3 pt-2">
           <textarea
@@ -470,17 +723,26 @@ export default function AnalitricsContextPanel({ conversationId }: AnalitricsCon
   const datasets = buildDatasetInsights(tables, profiles);
   const feedbackSources = buildFeedbackSources(files);
   const [selectedFileId, setSelectedFileId] = useState('');
-  const [activeFeedbackStep, setActiveFeedbackStep] = useState(1);
+  const [activeView, setActiveView] = useState<PanelView>('general');
+  const [activeFeedbackStep, setActiveFeedbackStep] = useState(0);
   const effectiveSelectedFileId = selectedFileId || feedbackSources[0]?.fileId || '';
   const selectedSource = feedbackSources.find((source) => source.fileId === effectiveSelectedFileId);
+  const selectedDataset =
+    datasets.find(
+      (dataset) =>
+        dataset.fileId === effectiveSelectedFileId ||
+        (selectedSource?.filename != null && dataset.filename === selectedSource.filename),
+    ) || datasets[0];
   const feedback = data?.feedback ?? [];
   const sourceFeedback = feedback.filter((item) => feedbackBelongsToSource(item, selectedSource));
   const hasProfile = Boolean(data?.found && datasets.length > 0);
-  const metricCandidates = unique(datasets.flatMap((dataset) => dataset.metricCandidates)).slice(0, 8);
-  const segmentCandidates = unique(datasets.flatMap((dataset) => dataset.segmentCandidates)).slice(0, 8);
-  const dateCandidates = unique(datasets.flatMap((dataset) => dataset.dateCandidates)).slice(0, 6);
-  const fieldCount = datasets.reduce((total, dataset) => total + dataset.columnCount, 0);
-  const rowCount = data?.summary?.rowCountTotal ?? datasets.reduce((total, dataset) => total + dataset.rowCount, 0);
+  const metricCandidates = selectedDataset?.metricCandidates ?? [];
+  const segmentCandidates = selectedDataset?.segmentCandidates ?? [];
+  const dateCandidates = selectedDataset?.dateCandidates ?? [];
+  const executiveKpis = buildExecutiveKpis(selectedDataset);
+  const executiveSummary = buildExecutiveSummary(selectedDataset, sourceFeedback);
+  const latestConcepts = latestFeedbackForSteps(sourceFeedback, [1])?.content || '';
+  const latestDefinitions = latestFeedbackForSteps(sourceFeedback, [2, 4, 6])?.content || '';
 
   if (!hasConversation) {
     return null;
@@ -490,7 +752,9 @@ export default function AnalitricsContextPanel({ conversationId }: AnalitricsCon
     <aside className="flex h-full min-h-0 flex-col bg-surface-primary text-text-primary">
       <div className="flex items-start justify-between gap-3 border-b border-border-light px-4 py-3">
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold">Resumen ejecutivo</h2>
+          <h2 className="text-sm font-semibold">
+            {activeView === 'general' ? 'Resumen ejecutivo' : 'Catálogo'}
+          </h2>
           <p className="mt-0.5 text-xs text-text-secondary">
             {isFetching ? 'Actualizando...' : data?.updatedAt ? 'Lectura actualizada' : 'Sin lectura'}
           </p>
@@ -506,6 +770,8 @@ export default function AnalitricsContextPanel({ conversationId }: AnalitricsCon
       </div>
 
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
+        <ViewSwitch activeView={activeView} onChange={setActiveView} />
+
         {error != null && (
           <div className="flex gap-2 rounded-lg border border-status-error-border bg-surface-secondary p-3 text-sm text-text-primary">
             <AlertCircle className="mt-0.5 size-4 shrink-0 text-status-error" aria-hidden="true" />
@@ -525,92 +791,100 @@ export default function AnalitricsContextPanel({ conversationId }: AnalitricsCon
           </div>
         )}
 
-        <div className="grid grid-cols-3 gap-2">
-          <Metric label="Ámbitos" value={datasets.length || files.length} />
-          <Metric label="Variables" value={fieldCount} />
-          <Metric label="Observaciones" value={rowCount} />
-        </div>
+        {activeView === 'general' ? (
+          <>
+            <ExecutiveFileSelector
+              sources={feedbackSources}
+              selectedFileId={effectiveSelectedFileId}
+              onChange={setSelectedFileId}
+            />
 
-        <InsightSection icon={Sigma} title="Indicadores sugeridos">
-          <ChipList
-            items={metricCandidates}
-            empty="Aún no se detectaron indicadores numéricos relevantes."
-          />
-        </InsightSection>
+            <InsightSection icon={FileSpreadsheet} title="Lectura ejecutiva">
+              <p className="text-xs leading-relaxed">{executiveSummary}</p>
+            </InsightSection>
 
-        <InsightSection icon={Tags} title="Dimensiones de análisis">
-          <ChipList items={segmentCandidates} empty="Aún no se detectaron cortes de negocio." />
-        </InsightSection>
-
-        <InsightSection icon={CalendarDays} title="Lectura temporal">
-          <ChipList items={dateCandidates} empty="No se detectaron campos de fecha." />
-        </InsightSection>
-
-        <InsightSection icon={BriefcaseBusiness} title="Lectura por ámbito">
-          {datasets.length === 0 ? (
-            <p>Sin ámbitos perfilados.</p>
-          ) : (
-            <div className="space-y-3">
-              {datasets.map((dataset) => (
-                <article key={dataset.fileId} className="space-y-2 rounded-md bg-surface-secondary p-2">
-                  <div className="min-w-0">
-                    <h4
-                      className="truncate text-sm font-medium text-text-primary"
-                      title={dataset.name}
-                    >
-                      {dataset.name}
-                    </h4>
-                    <p className="text-xs">
-                      {formatNumber(dataset.rowCount)} observaciones · {formatNumber(dataset.columnCount)} variables ·{' '}
-                      {formatNumber(dataset.numericCount)} indicadores numéricos
-                    </p>
-                  </div>
-                  <ChipList
-                    items={[
-                      ...dataset.metricCandidates.slice(0, 3),
-                      ...dataset.segmentCandidates.slice(0, 3),
-                    ]}
-                    empty="Lectura básica disponible; faltan señales de negocio."
-                  />
-                </article>
+            <div className="grid grid-cols-2 gap-2">
+              {executiveKpis.map((kpi) => (
+                <KpiCard key={kpi.key} kpi={kpi} />
               ))}
             </div>
-          )}
-        </InsightSection>
 
-        {data?.cacheHits != null && data.cacheHits > 0 && (
-          <div className="rounded-lg border border-border-light bg-surface-secondary p-3 text-xs text-text-secondary">
-            Lectura reutilizada {formatNumber(data.cacheHits)} veces en este chat.
-          </div>
-        )}
+            <InsightSection icon={Sigma} title="Indicadores sugeridos">
+              <ChipList
+                items={metricCandidates}
+                empty="Aún no se detectaron indicadores numéricos relevantes."
+              />
+            </InsightSection>
 
-        <InsightSection icon={PencilLine} title="Enriquecer catálogo">
-          <p className="mb-3 text-xs">
-            Orden sugerido: completa de arriba hacia abajo cuando tengas claridad. No es obligatorio
-            llenar todo para continuar el análisis.
-          </p>
-          <div className="mb-3">
+            <InsightSection icon={Tags} title="Dimensiones de análisis">
+              <ChipList items={segmentCandidates} empty="Aún no se detectaron cortes de negocio." />
+            </InsightSection>
+
+            <InsightSection icon={CalendarDays} title="Lectura temporal">
+              <ChipList items={dateCandidates} empty="No se detectaron campos de fecha." />
+            </InsightSection>
+
+            {data?.cacheHits != null && data.cacheHits > 0 && (
+              <div className="rounded-lg border border-border-light bg-surface-secondary p-3 text-xs text-text-secondary">
+                Lectura reutilizada {formatNumber(data.cacheHits)} veces en este chat.
+              </div>
+            )}
+          </>
+        ) : (
+          <>
             <SourceSelector
               sources={feedbackSources}
               selectedFileId={effectiveSelectedFileId}
               onChange={setSelectedFileId}
             />
-          </div>
-          <div className="space-y-3">
-            {feedbackSteps.map((step) => (
-              <CatalogFeedbackCard
-                key={step.step}
-                step={step}
-                conversationId={conversationId}
-                saved={sourceFeedback.filter((item) => item.step === step.step)}
-                disabled={!hasConversation || !selectedSource}
-                source={selectedSource}
-                expanded={activeFeedbackStep === step.step}
-                onToggle={() => setActiveFeedbackStep((current) => (current === step.step ? 0 : step.step))}
-              />
-            ))}
-          </div>
-        </InsightSection>
+
+            <InsightSection icon={PencilLine} title="Catálogo enriquecido">
+              <div className="space-y-3">
+                <div>
+                  <p className="text-xs font-medium text-text-primary">Conceptos de negocio</p>
+                  <p className="mt-1 line-clamp-3 text-xs">{compactText(latestConcepts)}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-text-primary">Definiciones y reglas activas</p>
+                  <p className="mt-1 line-clamp-3 text-xs">{compactText(latestDefinitions)}</p>
+                </div>
+                <div className="flex items-center gap-2 text-xs">
+                  <CheckCircle2
+                    className={cn(
+                      'size-4',
+                      sourceFeedback.length > 0 ? 'text-green-500' : 'text-text-tertiary',
+                    )}
+                    aria-hidden="true"
+                  />
+                  <span>
+                    {formatNumber(sourceFeedback.length)} aporte(s) guardado(s) para este archivo.
+                  </span>
+                </div>
+              </div>
+            </InsightSection>
+
+            <InsightSection icon={FileSpreadsheet} title="Editar catálogo">
+              <p className="mb-3 text-xs">
+                Orden sugerido: completa de arriba hacia abajo cuando tengas claridad. No es obligatorio
+                llenar todo para continuar el análisis.
+              </p>
+              <div className="space-y-3">
+                {feedbackSteps.map((step) => (
+                  <CatalogFeedbackCard
+                    key={step.step}
+                    step={step}
+                    conversationId={conversationId}
+                    saved={sourceFeedback.filter((item) => item.step === step.step)}
+                    disabled={!hasConversation || !selectedSource}
+                    source={selectedSource}
+                    expanded={activeFeedbackStep === step.step}
+                    onToggle={() => setActiveFeedbackStep((current) => (current === step.step ? 0 : step.step))}
+                  />
+                ))}
+              </div>
+            </InsightSection>
+          </>
+        )}
       </div>
     </aside>
   );

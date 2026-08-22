@@ -7,19 +7,43 @@ from opentelemetry.trace import Status, StatusCode
 
 from nl_sql_file import compose_answer, critique_answer
 
+from .analytical_context import AnalyticalContextBuilder
 from .duckdb_workspace import DuckDbTableCatalog, DuckDbWorkspace, DuckDbWorkspaceFactory, ProfileEnricher
 from .control_plane import CatalogRepository
 from .file_resolver import FileResolver
 from .llm_client import JsonLlmClient
 from .models import AgentRequest, AgentState
-from .prompts import (
-    CHART_SPEC_SYSTEM_PROMPT,
-    SCOPE_SYSTEM_PROMPT,
-)
+from .prompts import SCOPE_SYSTEM_PROMPT
 from .schema_context import SchemaContextBuilder
 from .sql_generation import SqlGenerator
 from .sql_validation import SqlReadOnlyValidator
 from .tracing import set_span_attrs
+
+CHART_INTENT_TERMS = (
+    "grafico",
+    "gráfico",
+    "visualiza",
+    "visualizar",
+    "barras",
+    "barra",
+    "linea",
+    "línea",
+    "torta",
+    "pie",
+    "donut",
+    "chart",
+    "plot",
+)
+
+LINE_CHART_TERMS = (
+    "linea",
+    "línea",
+    "tendencia",
+    "evolucion",
+    "evolución",
+    "serie",
+    "series",
+)
 
 
 class AgentRuntime:
@@ -50,6 +74,7 @@ class AnalyticalAgentNodes:
         llm_client: JsonLlmClient,
         sql_generator: SqlGenerator,
         sql_validator: SqlReadOnlyValidator,
+        analytical_context_builder: AnalyticalContextBuilder | None = None,
         progress: Callable[[str], None] | None = None,
         token: Callable[[str], None] | None = None,
     ) -> None:
@@ -65,6 +90,7 @@ class AnalyticalAgentNodes:
         self._llm_client = llm_client
         self._sql_generator = sql_generator
         self._sql_validator = sql_validator
+        self._analytical_context_builder = analytical_context_builder or AnalyticalContextBuilder()
         self._progress = progress
         self._token = token
 
@@ -91,6 +117,10 @@ class AnalyticalAgentNodes:
                 self._request,
                 [metadata.file_id for metadata in files],
             )
+            analytical_context = self._analytical_context_builder.build(
+                self._request.question,
+                self._request.context_messages,
+            )
             self._runtime.set_workspace(workspace)
             set_span_attrs(
                 span,
@@ -109,6 +139,8 @@ class AnalyticalAgentNodes:
                     "analitrics.table_count": len(tables),
                     "analitrics.row_count_total": sum(int(p.get("row_count") or 0) for p in profiles),
                     "analitrics.catalog_feedback_count": len(catalog_feedback),
+                    "analitrics.request_kind": analytical_context.get("request_kind"),
+                    "analitrics.last_sql_available": bool(analytical_context.get("last_sql")),
                 },
             )
             return {
@@ -120,6 +152,7 @@ class AnalyticalAgentNodes:
                 "tables": tables,
                 "profiles": profiles,
                 "catalog_feedback": catalog_feedback,
+                "analytical_context": analytical_context,
                 "cache_path": str(workspace.cache_path) if workspace.cache_path else "",
                 "cache_hits": workspace.cache_hits,
             }
@@ -137,6 +170,7 @@ class AnalyticalAgentNodes:
                         state.get("catalog_feedback") or [],
                     ),
                     "conversation_context": self._request.context_messages or [],
+                    "analytical_context": state.get("analytical_context") or {},
                 },
                 model_env="ANALITRICS_SCOPE_MODEL",
                 default_model="gpt-5.5",
@@ -162,6 +196,7 @@ class AnalyticalAgentNodes:
                 state["profiles"],
                 self._request.context_messages,
                 state.get("catalog_feedback") or [],
+                state.get("analytical_context") or {},
             )
             plan = {"sql": generated.sql, "rationale": generated.rationale, "backend": generated.backend}
             set_span_attrs(
@@ -230,20 +265,35 @@ class AnalyticalAgentNodes:
     def compose_answer(self, state: AgentState) -> AgentState:
         with self._tracer.start_as_current_span("compose_answer") as span:
             self._emit_progress("Redactando respuesta...")
-            answer = compose_answer(state["question"], state["sql"], state["rows"])
+            chart_intent = self._has_chart_intent(state["question"])
+            answer = compose_answer(state["question"], state["sql"], state["rows"], prefer_chart=chart_intent)
             self._emit_tokens(answer)
-            set_span_attrs(span, {"analitrics.answer_preview": answer[:500]})
+            set_span_attrs(
+                span,
+                {
+                    "analitrics.answer_preview": answer[:500],
+                    "analitrics.chart_intent": chart_intent,
+                },
+            )
             return {**state, "answer": answer}
 
     def critique_answer(self, state: AgentState) -> AgentState:
         with self._tracer.start_as_current_span("critique_answer") as span:
-            critic = critique_answer(state["question"], state["sql"], state["rows"], state["answer"])
+            chart_intent = self._has_chart_intent(state["question"])
+            critic = critique_answer(
+                state["question"],
+                state["sql"],
+                state["rows"],
+                state["answer"],
+                prefer_chart=chart_intent,
+            )
             answer = critic.get("revised_answer") if critic.get("approved") is False else state["answer"]
             set_span_attrs(
                 span,
                 {
                     "analitrics.critic_approved": critic.get("approved"),
                     "analitrics.critic_issues": critic.get("issues"),
+                    "analitrics.chart_intent": chart_intent,
                 },
             )
             return {**state, "critic": critic, "answer": str(answer or state["answer"])}
@@ -252,28 +302,43 @@ class AnalyticalAgentNodes:
         with self._tracer.start_as_current_span("generate_chart_spec") as span:
             self._emit_progress("Generando gráfico...")
             rows = state.get("rows") or []
+            chart_intent = self._has_chart_intent(state["question"])
+            chart_type = self._chart_type(state["question"]) if chart_intent else None
             if not rows:
-                result = {"chart_required": False, "reason": "No hay filas para graficar."}
-                set_span_attrs(span, {"analitrics.chart_required": False})
+                result = {
+                    "chart_required": False,
+                    "chart_intent": chart_intent,
+                    "chart_type": chart_type,
+                    "renderer": "mermaid",
+                    "spec": None,
+                    "reason": "No hay filas para graficar.",
+                }
+                set_span_attrs(
+                    span,
+                    {
+                        "analitrics.chart_required": False,
+                        "analitrics.chart_intent": chart_intent,
+                        "analitrics.chart_type": chart_type,
+                        "analitrics.chart_renderer": "mermaid",
+                    },
+                )
                 return {**state, "chart_spec": result}
-            result = self._llm_client.complete_json(
-                system=CHART_SPEC_SYSTEM_PROMPT,
-                payload={
-                    "question": state["question"],
-                    "rows_preview": rows[:50],
-                    "columns": list(rows[0].keys()) if rows else [],
-                },
-                model_env="ANALITRICS_CHART_MODEL",
-                default_model="gpt-5.5",
-            )
+            result = {
+                "chart_required": chart_intent,
+                "chart_intent": chart_intent,
+                "chart_type": chart_type,
+                "renderer": "mermaid",
+                "spec": None,
+                "reason": "El usuario pidió una visualización." if chart_intent else "El usuario no pidió visualización.",
+            }
             set_span_attrs(
                 span,
                 {
                     "analitrics.chart_required": result.get("chart_required"),
+                    "analitrics.chart_intent": chart_intent,
+                    "analitrics.chart_type": chart_type,
+                    "analitrics.chart_renderer": "mermaid",
                     "analitrics.chart_reason": result.get("reason"),
-                    "analitrics.chart_mark": (result.get("spec") or {}).get("mark")
-                    if isinstance(result.get("spec"), dict)
-                    else None,
                 },
             )
             return {**state, "chart_spec": result}
@@ -290,6 +355,7 @@ class AnalyticalAgentNodes:
             error=error,
             context_messages=self._request.context_messages,
             catalog_feedback=state.get("catalog_feedback") or [],
+            analytical_context=state.get("analytical_context") or {},
         )
         return {"sql": repaired.sql, "rationale": repaired.rationale}
 
@@ -307,3 +373,13 @@ class AnalyticalAgentNodes:
             return
         for index in range(0, len(text), 24):
             self._token(text[index : index + 24])
+
+    def _has_chart_intent(self, question: str) -> bool:
+        normalized = question.lower()
+        return any(term in normalized for term in CHART_INTENT_TERMS)
+
+    def _chart_type(self, question: str) -> str:
+        normalized = question.lower()
+        if any(term in normalized for term in LINE_CHART_TERMS):
+            return "line"
+        return "bar"

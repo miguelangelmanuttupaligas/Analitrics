@@ -158,6 +158,17 @@ Responsabilidades esperadas de `analitrics-app`:
 
 Antes de crear MCP servers productivos, el primer MVP NL-SQL tabular se hará con scripts Python.
 
+Regla de no regresión del flujo de archivos:
+
+- el flujo de archivos del MVP no será reemplazado por DB-GPT ni por otro motor externo;
+- los archivos originales seguirán en RustFS;
+- LibreChat/Mongo seguirá aportando metadata base del archivo;
+- DuckDB seguirá siendo cache analítica por `tenantId + userId + conversationId`;
+- Postgres control plane seguirá siendo fuente persistente del catálogo, profiling, feedback y memoria analítica estructurada;
+- la generación SQL seguirá produciendo SQL DuckDB validado antes de ejecutar;
+- la conversión a gráfico ocurrirá después de ejecutar SQL y sobre resultados controlados;
+- DB-GPT solo puede aportar técnicas alrededor del flujo: contexto, reintentos, razonamiento, crítica, feedback, chart contracts, dashboard y patrones de seguridad.
+
 Decisiones:
 
 - LibreChat Agents + MCP será la interfaz objetivo, pero no se implementa todavía en esta etapa;
@@ -245,6 +256,33 @@ Contrato de alcance:
 - no se diseñará todavía el flujo de conexión a bases de datos empresariales;
 - si a futuro se conectan bases de datos externas, su catálogo se mantendrá separado del catálogo de archivos;
 - no habrá merge entre catálogo DuckDB/archivos y catálogo de bases de datos hasta diseñar una estrategia explícita, validada y documentada.
+
+### 7.1.0 Flujo Database futuro
+
+La versión futura de conexión a bases de datos se diseñará como flujo separado del flujo de archivos.
+
+Para ese flujo, DB-GPT será una referencia fuerte porque ya resuelve varias piezas propias de data products:
+
+- registro de datasources;
+- introspección de schema;
+- generación SQL;
+- ejecución read-only;
+- visualización/chart;
+- dashboard;
+- patrones de razonamiento, retry y crítica.
+
+Pero no se copiará como caja negra. Cualquier implementación Database deberá nacer adaptada al contrato Analitrics:
+
+- `tenantId` obligatorio;
+- `userId` obligatorio;
+- `conversationId` y `run_id` para trazabilidad;
+- credenciales por tenant y conexión;
+- permisos reales de solo lectura en la base conectada;
+- aislamiento por tenant en control plane;
+- catálogo de BD separado del catálogo de archivos;
+- cero merge automático entre catálogo de BD y catálogo de archivos hasta diseñarlo explícitamente;
+- observabilidad en Phoenix con el mismo `run_id`;
+- UI principal en LibreChat + Analitrics.
 
 ### 7.1.1 Memoria, retención y compactación analítica
 

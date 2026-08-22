@@ -1,6 +1,61 @@
 # DB-GPT Upload Flow como guía para Analitrics
 
-Este documento describe cómo DB-GPT trata uploads tabulares y qué patrones conviene rescatar para el input layer de Analitrics. DB-GPT queda como referencia de diseño, no como motor obligatorio del MVP.
+Este documento describe cómo DB-GPT trata uploads tabulares y qué patrones conviene observar. No redefine ni reemplaza el flujo de archivos de Analitrics.
+
+Regla obligatoria:
+
+```text
+El flujo de archivos Analitrics no se reemplaza ni se reordena por DB-GPT.
+```
+
+El flujo vigente para archivos queda cerrado así:
+
+```text
+LibreChat upload -> RustFS original -> metadata Mongo/LibreChat -> DuckDB por conversationId -> catalogo/profiling en Postgres -> SQL validado -> respuesta -> chart estructurado
+```
+
+DB-GPT solo puede aportar técnicas alrededor de ese flujo:
+
+- manejo de contexto;
+- reintentos;
+- razonamiento y crítica;
+- feedback del usuario;
+- contratos de chart;
+- evolución a dashboard;
+- patrones de seguridad alrededor de manifest público versus metadata privada.
+
+Para el flujo futuro de conexión a bases de datos, DB-GPT sí será una referencia fuerte. Aun así, todo deberá adaptarse al contrato Analitrics: `tenantId`, `userId`, `conversationId`, permisos, catálogo separado y control plane propio.
+
+## Revisión de código base DB-GPT
+
+Repositorio revisado:
+
+```text
+https://github.com/eosphoros-ai/DB-GPT
+clone local temporal: /tmp/dbgpt-fork-tmp-20260821200443
+licencia: MIT
+```
+
+Rutas fuente relevantes observadas:
+
+```text
+packages/dbgpt-app/src/dbgpt_app/scene/chat_data/chat_excel/excel_reader.py
+packages/dbgpt-app/src/dbgpt_app/scene/chat_data/chat_excel/excel_learning/chat.py
+packages/dbgpt-app/src/dbgpt_app/scene/chat_data/chat_excel/excel_learning/prompt.py
+packages/dbgpt-app/src/dbgpt_app/scene/chat_data/chat_excel/excel_analyze/chat.py
+packages/dbgpt-app/src/dbgpt_app/scene/chat_data/chat_excel/excel_analyze/prompt.py
+packages/dbgpt-serve/src/dbgpt_serve/session_file/domain.py
+packages/dbgpt-serve/src/dbgpt_serve/session_file/models/models.py
+packages/dbgpt-serve/src/dbgpt_serve/session_file/models/dao.py
+packages/dbgpt-app/src/dbgpt_app/openapi/api_v1/attachment_react_adapter.py
+packages/dbgpt-app/src/dbgpt_app/openapi/api_v1/tools/execute_analysis.py
+packages/dbgpt-app/src/dbgpt_app/openapi/api_v1/tools/code_interpreter.py
+packages/dbgpt-app/src/dbgpt_app/openapi/api_v1/tools/sql_query.py
+packages/dbgpt-core/src/dbgpt/agent/core/context/manager.py
+packages/dbgpt-core/src/dbgpt/agent/core/context/compact.py
+packages/dbgpt-core/src/dbgpt/agent/expand/actions/chart_action.py
+packages/dbgpt-core/src/dbgpt/vis/tags/vis_chart.py
+```
 
 ## Flujo observado en DB-GPT
 
@@ -65,7 +120,177 @@ Pasos:
     - muestra pequeña de datos.
 16. La respuesta esperada incluye SQL embebido en `api-call`; luego `display_sql_llmvis` ejecuta SQL y transforma el resultado a `chart-view`.
 
-## Piezas valiosas para rescatar
+## Lógica real que conviene extraer como guía, sin tocar el flujo de archivos
+
+### A. Fase de learning antes de responder
+
+DB-GPT no intenta responder contra el Excel bruto. Su `ChatExcel.prepare()` crea una corrida `ExcelLearning` cuando el chat todavía no tiene historia.
+
+Patrón:
+
+```text
+archivo -> tabla temporal DuckDB -> sample + DDL + SUMMARIZE -> LLM learning -> tabla final comentada
+```
+
+Para Analitrics esto no cambia el pipeline actual. Solo confirma una práctica que ya perseguimos: separar preparación, enriquecimiento semántico y respuesta.
+
+Traducción conceptual:
+
+```text
+FileResolver -> DuckDbWorkspace -> ProfileEnricher -> CatalogRepository -> SemanticCatalogEnricher
+```
+
+El cambio importante no es copiar su prompt, sino copiar la separación mental:
+
+- `ingest/profile` prepara el dataset;
+- `semantic_enrich` entiende columnas y conceptos;
+- `query_answer` responde preguntas.
+
+### B. Loader con fallback explícito
+
+DB-GPT intenta:
+
+```text
+DuckDB directo: SELECT * FROM '<file>'
+si falla:
+  read_csv / read_xlsx / read_json_auto / read_parquet
+si falla:
+  pandas/read_excel/read_csv
+```
+
+Para Analitrics esto no modifica la decisión actual de loaders del MVP. Solo queda como inspiración para errores más claros y fallback futuro:
+
+- CSV: mantener `read_csv_auto` como primera vía.
+- XLS/XLSX: mantener pandas/openpyxl como vía principal.
+- Agregar fallback futuro para Excel difícil o CSV irregular.
+- Registrar `loader_strategy`, `loader_error` y `warnings` en Postgres.
+
+### C. Manifest público versus rutas privadas
+
+DB-GPT separa dos representaciones:
+
+- `SessionFileManifest`: seguro para el agente y UI.
+- `SessionFilePrivateRecord`: contiene `storage_uri`, `sha256`, owner y datos privados.
+
+También genera un `files_json_path` interno para que el proceso Python reciba el mapa `file_id -> path` por variable de entorno, no por texto en el prompt.
+
+Para Analitrics debemos mantener este contrato sin cambiar las fuentes de verdad:
+
+```text
+LLM ve:
+  file_id, filename, mime, size, status, ordinal, resumen/profiling
+
+runtime ve:
+  tenantId, userId, conversationId, storageKey, bucket, sha256, local_path
+```
+
+Esto evita que el modelo invente rutas, filtre paths internos o mezcle archivos entre usuarios.
+
+### D. Errores indistinguibles para seguridad
+
+En `attachment_react_adapter.py`, DB-GPT usa el mismo error para:
+
+```text
+archivo inexistente
+archivo de otro usuario
+archivo de otra sesión
+archivo borrado
+archivo fallido
+```
+
+Para Analitrics conviene adoptar el mismo patrón en APIs internas:
+
+```text
+404 ANALITRICS_FILE_NOT_FOUND
+```
+
+El usuario no debe poder enumerar `file_id` ajenos distinguiendo mensajes.
+
+### E. Context management por capas
+
+DB-GPT implementa una compactación progresiva:
+
+1. truncar observaciones antiguas;
+2. mantener rondas recientes;
+3. resumir con LLM si el contexto se acerca al límite;
+4. compactación reactiva si el modelo rechaza por contexto.
+
+Para Analitrics este es el aporte más inmediato de DB-GPT al flujo de archivos, porque no cambia almacenamiento, DuckDB, catálogo ni SQL. Solo mejora qué contexto llega a cada paso:
+
+- detectar si la pregunta es nueva, seguimiento o corrección;
+- preservar `last_sql`, `last_answer` y últimos mensajes relevantes;
+- enviar ese contexto analítico a scope/generate_sql/repair_sql;
+- más adelante, reemplazar “pasar todo” por memoria analítica compactada.
+
+### F. Visualización como salida estructurada
+
+DB-GPT no trata el gráfico como texto decorativo. `ChartAction` ejecuta SQL, obtiene dataframe y produce un protocolo `vis-db-chart` con:
+
+```text
+type
+sql
+title
+describe
+data
+```
+
+Para Analitrics esto tampoco cambia el pipeline de archivos. Solo endurece la salida posterior a SQL:
+
+```text
+analitrics_chart:
+  chart_type
+  sql
+  title
+  x/y/series
+  data points
+  reason
+```
+
+La UI React debe renderizar ese contrato. El texto del LLM no debe incluir código de gráfico ni duplicar tablas si ya existe componente visual.
+
+## Cambios pequeños ya alineados con esta guía
+
+Se agregó en Analitrics una primera versión de contexto analítico conversacional:
+
+```text
+analitrics_agent/analytical_context.py
+```
+
+Objetivo:
+
+- clasificar la pregunta como `new_question`, `follow_up` o `correction`;
+- extraer `last_sql` desde la traza `analitrics_sql`;
+- extraer `last_answer`;
+- pasar `analytical_context` a:
+  - validación de alcance;
+  - generación SQL;
+  - reparación SQL.
+
+Esto cubre el caso tipo:
+
+```text
+Usuario: ¿Top cursos por ingresos?
+Analitrics: responde tabla + SQL.
+Usuario: No, usa producto en vez de curso.
+Analitrics: debe interpretar la segunda pregunta como corrección del análisis anterior.
+```
+
+Limitación actual:
+
+- es heurístico;
+- no compacta todavía;
+- no persiste memoria analítica separada;
+- no modifica catálogo automáticamente por una corrección conversacional.
+
+Próximo paso natural:
+
+```text
+CorrectionFeedbackExtractor
+```
+
+Este componente leerá correcciones explícitas del usuario y propondrá guardarlas como feedback del catálogo, idealmente con confirmación visual en el panel derecho.
+
+## Piezas valiosas para rescatar sin reemplazar el flujo
 
 ### 1. Metadata de archivo explícita
 
@@ -86,7 +311,7 @@ sys_code
 created/modified timestamps
 ```
 
-Para Analitrics conviene usar un contrato similar, adaptado:
+Analitrics ya tiene su contrato operativo. DB-GPT sirve como checklist para no perder campos:
 
 ```text
 tenantId
@@ -104,7 +329,7 @@ hash/checksum
 createdAt
 ```
 
-El punto más rescatable es `file_hash`: Analitrics debe usar hash real del objeto para invalidar cache DuckDB, no solo filename, `file_id` o tamaño.
+El punto rescatable es `file_hash` como disciplina de trazabilidad. En Analitrics debe convivir con nuestro contrato actual y no cambiar la propiedad del archivo original: RustFS sigue siendo la fuente persistente.
 
 ### 2. Storage separado de metadata
 
@@ -114,13 +339,13 @@ DB-GPT separa:
 - metadata consultable en DB;
 - URI portable para volver a leer el archivo.
 
-Analitrics ya va en esa dirección con RustFS + Mongo temporal. A futuro, Postgres control plane debe asumir catálogo, profiling y memoria analítica, no duplicar innecesariamente la metadata base de archivo que LibreChat ya captura.
+Analitrics ya va en esa dirección con RustFS + Mongo temporal + Postgres control plane. DB-GPT no reemplaza esa decisión.
 
 ### 3. Cache DuckDB derivada y reutilizable
 
 DB-GPT no trata DuckDB como fuente primaria. Lo usa como derivado reconstruible del archivo y lo cachea por archivo/conversación.
 
-Para Analitrics, la regla correcta es:
+Para Analitrics, la regla ya definida se mantiene:
 
 ```text
 RustFS = fuente original
@@ -128,7 +353,7 @@ DuckDB = cache analítica derivada
 Postgres control plane = catálogo/profiling/memoria analítica
 ```
 
-La cache debe invalidarse por hash de archivo, no solo por filename o `file_id`.
+La cache se mantiene aislada por `tenantId + userId + conversationId`. La invalidación y reconstrucción deben respetar ese aislamiento.
 
 ### 4. Learning inicial separado del análisis
 
@@ -137,7 +362,7 @@ DB-GPT separa dos fases:
 - `ExcelLearning`: entiende y transforma dataset.
 - `ChatExcel`: responde preguntas usando schema enriquecido.
 
-Analitrics debería copiar esa separación:
+Analitrics debe mantener esa separación conceptual dentro de su propio flujo:
 
 - `ingest/profile`: carga archivo, detecta schema, crea catálogo técnico.
 - `semantic_enrich`: crea descripciones, sinónimos, reglas y planes.
@@ -155,7 +380,7 @@ CREATE TABLE data_analysis_table (
 ) COMMENT '...';
 ```
 
-Es un patrón útil. Para Analitrics, el LLM debería recibir un contexto parecido, pero generado desde nuestro catálogo:
+Es un patrón útil de representación, no de persistencia. Para Analitrics, el LLM puede recibir un contexto parecido, pero generado desde nuestro catálogo en Postgres:
 
 ```text
 tabla
@@ -168,7 +393,7 @@ muestras pequeñas
 reglas confirmadas por usuario
 ```
 
-No necesitamos que DuckDB sea dueño del catálogo, pero sí podemos renderizar el catálogo como DDL comentado para el prompt.
+DuckDB no será dueño del catálogo. Si usamos DDL comentado, será solo una vista textual generada desde Postgres.
 
 ### 6. Fallback de lectura
 
@@ -179,7 +404,7 @@ Analitrics hoy:
 - CSV: DuckDB `read_csv_auto`.
 - Excel: pandas/openpyxl.
 
-Podemos mejorar tomando el patrón:
+Podemos mejorar errores y trazabilidad tomando el patrón, sin cambiar el flujo base:
 
 1. Probar DuckDB directo cuando aplique.
 2. Caer a pandas/openpyxl.

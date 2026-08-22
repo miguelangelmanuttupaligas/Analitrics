@@ -286,6 +286,42 @@ export function createRoleMethods(
   }
 
   /**
+   * Startup interface permissions run in system context and update the base roles.
+   * Analitrics also has tenant-scoped system roles, so explicit interface permissions
+   * must be mirrored to those tenant documents with narrow field updates.
+   */
+  async function syncPermissionUpdatesToTenantRoles(
+    roleName: string,
+    updates: Record<string, Record<string, boolean>>,
+  ): Promise<void> {
+    const Role = mongoose.models.Role;
+    const tenantUpdates: Record<string, boolean> = {};
+
+    for (const [permissionType, permissions] of Object.entries(updates)) {
+      for (const [permission, value] of Object.entries(permissions)) {
+        if (value !== undefined) {
+          tenantUpdates[`permissions.${permissionType}.${permission}`] = value;
+        }
+      }
+    }
+
+    if (Object.keys(tenantUpdates).length === 0) {
+      return;
+    }
+
+    const result = await Role.updateMany(
+      { name: roleName, tenantId: { $exists: true, $ne: null } },
+      { $set: tenantUpdates },
+    );
+
+    if (result.modifiedCount > 0) {
+      logger.info(
+        `Synced explicit '${roleName}' role permissions to ${result.modifiedCount} tenant role(s)`,
+      );
+    }
+  }
+
+  /**
    * Updates access permissions for a specific role and multiple permission types.
    */
   async function updateAccessPermissions(
@@ -441,6 +477,8 @@ export function createRoleMethods(
       } else {
         logger.info(`No changes needed for '${roleName}' role permissions`);
       }
+
+      await syncPermissionUpdatesToTenantRoles(roleName, updates);
     } catch (error) {
       logger.error(`Failed to update ${roleName} role permissions:`, error);
     }

@@ -439,11 +439,11 @@ Ejemplo de URI:
 dbgpt-fs://distributed/dbgpt_app_file/<uuid>?user_name=analitrics-spike&conv_uid=...
 ```
 
-Lectura: DB-GPT no esta usando RustFS/S3 en esta configuracion. Preserva archivos y DuckDB en filesystem local persistente. Si RustFS sigue siendo requisito de producto, hay que integrar backend S3 compatible o sincronizar/adaptar uploads entre DB-GPT y RustFS.
+Lectura: DB-GPT no esta usando RustFS/S3 en esta configuracion. Preserva archivos y DuckDB en filesystem local persistente. Para Analitrics esto confirma que DB-GPT no debe reemplazar el flujo de archivos vigente, porque nuestro contrato exige RustFS, metadata LibreChat/Mongo, DuckDB por conversación y catálogo/profiling en Postgres control plane.
 
 ## Lectura tecnica
 
-DB-GPT parece mejor encaminado si Analitrics quiere ser una plataforma de data product:
+DB-GPT tiene piezas maduras de data product que conviene estudiar:
 
 - ya tiene `chat_excel`;
 - ya materializa DuckDB;
@@ -453,7 +453,7 @@ DB-GPT parece mejor encaminado si Analitrics quiere ser una plataforma de data p
 - ya expone datasources;
 - ya tiene AWEL para workflows.
 
-LibreChat + Analitrics gana donde queremos control fino:
+LibreChat + Analitrics queda como producto y flujo de archivos:
 
 - SSO/Keycloak ya avanzado;
 - tenantId ya pensado desde gateway/claims;
@@ -462,12 +462,27 @@ LibreChat + Analitrics gana donde queremos control fino:
 - menor acoplamiento a una plataforma grande;
 - mas control sobre restricciones de producto.
 
-## Decision provisional
+## Decision actual
 
-DB-GPT debe seguir como candidato principal para reemplazar una parte grande o total
-de `LibreChat + analitrics-app`, pero no se declara reemplazo todavia.
+DB-GPT no reemplaza el flujo de archivos de Analitrics.
 
-La siguiente validacion debe enfocarse en endurecer `tenantId/sys_code`:
+El flujo de archivos queda:
+
+```text
+LibreChat upload -> RustFS original -> metadata Mongo/LibreChat -> DuckDB por conversationId -> catalogo/profiling en Postgres -> SQL validado -> respuesta -> chart estructurado
+```
+
+DB-GPT queda como referencia para:
+
+- manejo de contexto;
+- reintentos;
+- razonamiento y crítica;
+- feedback;
+- contratos de chart;
+- dashboard;
+- patrones de datasource para la futura version Database.
+
+Para el flujo Database futuro, DB-GPT sí será referencia principal, pero adaptado a Analitrics y no como caja negra. La siguiente validacion debe enfocarse en endurecer `tenantId/sys_code` o su equivalente en nuestro control plane:
 
 1. Definir si usaremos patch directo en DB-GPT o adapter/gateway delante de DB-GPT.
 2. Inyectar `tenantId` desde Keycloak/gateway como `sys_code`, no desde el cliente.

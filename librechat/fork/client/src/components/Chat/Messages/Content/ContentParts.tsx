@@ -54,6 +54,9 @@ const getAnalitricsChartOutput = (part: TMessageContentParts): string | null => 
   return typeof toolCall.output === 'string' && toolCall.output.length > 0 ? toolCall.output : null;
 };
 
+const isAnalitricsChartPart = (part: TMessageContentParts): boolean =>
+  getAnalitricsChartOutput(part) != null;
+
 const getToolGroupId = (parts: PartWithIndex[], fallbackScope: number): string => {
   const firstPart = parts[0];
   if (!firstPart) {
@@ -448,9 +451,16 @@ const ContentParts = memo(function ContentParts({
   }, [absoluteIndexAt, content]);
   const postSteerAuthors = resumeAuthors ?? detectedResumeAuthors;
 
+  const chartParts = useMemo(
+    () => sequentialParts.filter(({ part }) => isAnalitricsChartPart(part)),
+    [sequentialParts],
+  );
+
   const groupedParts = useMemo(
     () =>
-      groupSequentialToolCalls(sequentialParts).map((group) => {
+      groupSequentialToolCalls(
+        sequentialParts.filter(({ part }) => !isAnalitricsChartPart(part)),
+      ).map((group) => {
         if (group.type === 'single') {
           return group;
         }
@@ -685,15 +695,14 @@ const ContentParts = memo(function ContentParts({
               labelPart={group.labelPart}
             />,
           );
-          group.parts.forEach(({ part, idx }) => {
-            const output = getAnalitricsChartOutput(part);
-            if (!output) {
-              return;
-            }
-            nodes.push(<AnalitricsChart key={`analitrics-chart-${messageId}-${idx}`} output={output} />);
-          });
           return nodes;
         })}
+      {chartParts.map(({ part, idx }) => (
+        <AnalitricsChart
+          key={`analitrics-chart-${messageId}-${idx}`}
+          output={getAnalitricsChartOutput(part)}
+        />
+      ))}
       {!nestedActivityPhase && <WorkspaceChanges attachments={workspaceChanges} />}
     </SearchContext.Provider>
   );

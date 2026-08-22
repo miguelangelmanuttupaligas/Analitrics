@@ -43,6 +43,13 @@ FORBIDDEN_SQL_TERMS = re.compile(
     re.I,
 )
 
+CODE_BLOCK_RE = re.compile(r"```.*?```", re.S)
+VISUAL_CODE_LINE_RE = re.compile(
+    r"^\s*(import\s+|from\s+\w+\s+import|plt\.|fig\s*=|ax\s*=|cursos\s*=|ingresos\s*=|matplotlib|seaborn|plotly)",
+    re.I,
+)
+MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
+
 
 @dataclass
 class FileMetadata:
@@ -202,6 +209,7 @@ def load_workbook(con: duckdb.DuckDBPyConnection, path: Path) -> list[str]:
 
 def profile_tables(con: duckdb.DuckDBPyConnection, tables: list[str], sample_rows: int) -> list[dict[str, Any]]:
     profiles: list[dict[str, Any]] = []
+    numeric_type_hints = ("decimal", "double", "float", "real", "numeric", "int", "bigint", "smallint", "tinyint", "hugeint")
     for table in tables:
         columns = con.execute(f'describe "{table}"').fetchall()
         row_count = con.execute(f'select count(*) from "{table}"').fetchone()[0]
@@ -220,16 +228,38 @@ def profile_tables(con: duckdb.DuckDBPyConnection, tables: list[str], sample_row
                 f'select distinct "{quoted}" from "{table}" where "{quoted}" is not null limit ?',
                 [min(sample_rows, 5)],
             ).fetchdf()
-            column_profiles.append(
-                {
-                    "name": column_name,
-                    "type": column_type,
-                    "null_count": int(null_count or 0),
-                    "null_ratio": float(null_count / row_count) if row_count else 0.0,
-                    "distinct_count": int(distinct_count) if distinct_count is not None else None,
-                    "sample_values": json.loads(sample_values.to_json(orient="records", date_format="iso")),
-                }
-            )
+            column_profile = {
+                "name": column_name,
+                "type": column_type,
+                "null_count": int(null_count or 0),
+                "null_ratio": float(null_count / row_count) if row_count else 0.0,
+                "distinct_count": int(distinct_count) if distinct_count is not None else None,
+                "sample_values": json.loads(sample_values.to_json(orient="records", date_format="iso")),
+            }
+            if any(hint in column_type.lower() for hint in numeric_type_hints):
+                try:
+                    stats = con.execute(
+                        f'''
+                        select
+                            min("{quoted}")::double as min_value,
+                            max("{quoted}")::double as max_value,
+                            avg("{quoted}")::double as avg_value,
+                            sum("{quoted}")::double as sum_value
+                        from "{table}"
+                        where "{quoted}" is not null
+                        '''
+                    ).fetchone()
+                    column_profile.update(
+                        {
+                            "min": float(stats[0]) if stats and stats[0] is not None else None,
+                            "max": float(stats[1]) if stats and stats[1] is not None else None,
+                            "avg": float(stats[2]) if stats and stats[2] is not None else None,
+                            "sum": float(stats[3]) if stats and stats[3] is not None else None,
+                        }
+                    )
+                except Exception:
+                    pass
+            column_profiles.append(column_profile)
         profiles.append(
             {
                 "table": table,
@@ -324,16 +354,29 @@ def validate_select_sql(sql: str) -> None:
         raise RuntimeError(f"Only SELECT/WITH queries are allowed, got: {expression.key}")
 
 
-def compose_answer(question: str, sql: str, rows: list[dict[str, Any]]) -> str:
+def compose_answer(question: str, sql: str, rows: list[dict[str, Any]], prefer_chart: bool = False) -> str:
     client = OpenAI(api_key=env("OPENAI_API_KEY"))
     model = env("ANALITRICS_ANSWER_MODEL", env("ANALITRICS_NL_SQL_MODEL", "gpt-4.1-mini"))
+    chart_instruction = (
+        "La respuesta tendrá un gráfico interactivo con los mismos datos. "
+        "No incluyas tablas markdown, rankings extensos ni listas fila por fila; el gráfico prevalece. "
+        "Redacta solo 1 o 2 frases con la lectura gerencial principal."
+        if prefer_chart
+        else "Si el usuario pide tabla, puedes usar una tabla markdown breve."
+    )
     response = client.chat.completions.create(
         model=model,
         temperature=0,
         messages=[
             {
                 "role": "system",
-                "content": "Redacta una respuesta breve en español basada solo en los resultados entregados.",
+                "content": (
+                    "Redacta una respuesta breve en español basada solo en los resultados entregados. "
+                    "No escribas código, pseudocódigo, Python, matplotlib, Mermaid, SQL adicional ni instrucciones "
+                    "para construir gráficos. Si la pregunta pide un gráfico, responde solo el análisis textual; "
+                    "el gráfico será renderizado por otro componente. "
+                    + chart_instruction
+                ),
             },
             {
                 "role": "user",
@@ -345,12 +388,24 @@ def compose_answer(question: str, sql: str, rows: list[dict[str, Any]]) -> str:
             },
         ],
     )
-    return response.choices[0].message.content or ""
+    return sanitize_answer_text(response.choices[0].message.content or "", remove_tables=prefer_chart)
 
 
-def critique_answer(question: str, sql: str, rows: list[dict[str, Any]], answer: str) -> dict[str, Any]:
+def critique_answer(
+    question: str,
+    sql: str,
+    rows: list[dict[str, Any]],
+    answer: str,
+    prefer_chart: bool = False,
+) -> dict[str, Any]:
     client = OpenAI(api_key=env("OPENAI_API_KEY"))
     model = env("ANALITRICS_CRITIC_MODEL", env("ANALITRICS_NL_SQL_MODEL", "gpt-4.1-mini"))
+    chart_instruction = (
+        "Si habrá gráfico interactivo, no agregues tablas markdown, rankings extensos ni listas fila por fila. "
+        "Deja solo una lectura ejecutiva breve."
+        if prefer_chart
+        else ""
+    )
     response = client.chat.completions.create(
         model=model,
         temperature=0,
@@ -360,6 +415,10 @@ def critique_answer(question: str, sql: str, rows: list[dict[str, Any]], answer:
                 "role": "system",
                 "content": (
                     "Revisa si la respuesta contesta la pregunta usando el SQL y los resultados. "
+                    "No agregues código, pseudocódigo, Python, matplotlib, Mermaid, SQL adicional ni instrucciones "
+                    "para construir gráficos. Si revisas una solicitud con gráfico, deja solo análisis textual. "
+                    + chart_instruction
+                    + " "
                     "Responde JSON con keys: approved(boolean), issues(array), revised_answer(string)."
                 ),
             },
@@ -373,7 +432,39 @@ def critique_answer(question: str, sql: str, rows: list[dict[str, Any]], answer:
             },
         ],
     )
-    return json.loads(response.choices[0].message.content or "{}")
+    parsed = json.loads(response.choices[0].message.content or "{}")
+    if parsed.get("revised_answer"):
+        parsed["revised_answer"] = sanitize_answer_text(str(parsed["revised_answer"]), remove_tables=prefer_chart)
+    return parsed
+
+
+def sanitize_answer_text(answer: str, remove_tables: bool = False) -> str:
+    without_blocks = CODE_BLOCK_RE.sub("", answer)
+    lines = [
+        line
+        for line in without_blocks.splitlines()
+        if not VISUAL_CODE_LINE_RE.search(line)
+    ]
+    cleaned = "\n".join(lines).strip()
+    if remove_tables:
+        cleaned = strip_markdown_tables(cleaned)
+    return cleaned.strip()
+
+
+def strip_markdown_tables(answer: str) -> str:
+    lines = answer.splitlines()
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        next_line = lines[index + 1] if index + 1 < len(lines) else ""
+        if "|" in lines[index] and MARKDOWN_TABLE_SEPARATOR_RE.match(next_line):
+            index += 2
+            while index < len(lines) and "|" in lines[index]:
+                index += 1
+            continue
+        output.append(lines[index])
+        index += 1
+    return "\n".join(output)
 
 
 def run(args: argparse.Namespace) -> None:

@@ -1,26 +1,28 @@
-type ChartEncoding = {
-  field?: string;
-  title?: string;
-  type?: string;
-};
+import { useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 
-type VegaLiteSpec = {
-  title?: string;
-  mark?: string | { type?: string };
-  data?: {
-    values?: Record<string, unknown>[];
-  };
-  encoding?: {
-    x?: ChartEncoding;
-    y?: ChartEncoding;
-  };
+type ChartPoint = {
+  label: string;
+  value: number;
 };
 
 type ChartPayload = {
   chart_required?: boolean;
-  reason?: string;
-  spec?: VegaLiteSpec | null;
+  chart_type?: 'bar' | 'line';
+  title?: string;
+  category_field?: string;
+  value_field?: string;
+  points?: ChartPoint[];
 };
+
+type SortMode = 'original' | 'desc' | 'asc';
+
+type TooltipState = {
+  label: string;
+  value: number;
+  x: number;
+  y: number;
+} | null;
 
 const numberFormat = new Intl.NumberFormat('es-PE', {
   maximumFractionDigits: 0,
@@ -38,195 +40,256 @@ const parsePayload = (output?: string | null): ChartPayload | null => {
   }
 };
 
-const markType = (mark: VegaLiteSpec['mark']) =>
-  typeof mark === 'string' ? mark : mark?.type || '';
+const normalizePoints = (points?: ChartPoint[]) =>
+  (Array.isArray(points) ? points : [])
+    .map((point) => ({
+      label: String(point?.label ?? ''),
+      value: Number(point?.value ?? 0),
+    }))
+    .filter((point) => point.label && Number.isFinite(point.value))
+    .slice(0, 10);
 
-const numericValue = (row: Record<string, unknown>, field?: string) => {
-  if (!field) {
-    return 0;
-  }
-  const value = row[field];
-  return typeof value === 'number' ? value : Number(value ?? 0);
-};
-
-const textValue = (row: Record<string, unknown>, field?: string) => {
-  if (!field) {
-    return '';
-  }
-  return String(row[field] ?? '');
-};
-
-const isQuantitative = (encoding?: ChartEncoding) =>
-  /quantitative|number|integer/i.test(encoding?.type || '');
-
-function UnsupportedChart({ reason }: { reason?: string }) {
+function EmptyChart() {
   return (
-    <div className="my-3 rounded-lg border border-border-light bg-surface-secondary p-3 text-sm text-text-secondary">
-      <div className="font-medium text-text-primary">Grafico sugerido</div>
-      <p className="mt-1">{reason || 'El agente sugirio un grafico, pero la especificacion no es compatible con el renderer MVP.'}</p>
+    <div className="my-3 rounded-lg border border-border-light bg-surface-primary p-3 text-sm text-text-secondary">
+      No hay datos suficientes para renderizar el gráfico.
     </div>
   );
 }
 
-function HorizontalBarChart({
-  spec,
-  rows,
+function sortPoints(points: ChartPoint[], sortMode: SortMode) {
+  if (sortMode === 'desc') {
+    return [...points].sort((a, b) => b.value - a.value);
+  }
+  if (sortMode === 'asc') {
+    return [...points].sort((a, b) => a.value - b.value);
+  }
+  return points;
+}
+
+function ChartTooltip({ tooltip }: { tooltip: TooltipState }) {
+  if (!tooltip) {
+    return null;
+  }
+  return (
+    <div
+      className="pointer-events-none absolute z-10 rounded-md border border-border-light bg-surface-primary px-2.5 py-2 text-xs shadow-lg"
+      style={{ left: tooltip.x + 12, top: tooltip.y + 12 }}
+    >
+      <div className="max-w-64 truncate font-medium text-text-primary">{tooltip.label}</div>
+      <div className="mt-0.5 tabular-nums text-text-secondary">{numberFormat.format(tooltip.value)}</div>
+    </div>
+  );
+}
+
+function ChartShell({
+  title,
+  valueLabel,
+  sortMode,
+  zoom,
+  tooltip,
+  onSortChange,
+  onZoomChange,
+  children,
 }: {
-  spec: VegaLiteSpec;
-  rows: Record<string, unknown>[];
+  title: string;
+  valueLabel: string;
+  sortMode: SortMode;
+  zoom: number;
+  tooltip: TooltipState;
+  onSortChange: (sortMode: SortMode) => void;
+  onZoomChange: (zoom: number) => void;
+  children: ReactNode;
 }) {
-  const xField = spec.encoding?.x?.field;
-  const yField = spec.encoding?.y?.field;
-  const max = Math.max(...rows.map((row) => numericValue(row, xField)), 1);
-  const width = 680;
-  const rowHeight = 34;
-  const labelWidth = 230;
-  const chartWidth = width - labelWidth - 80;
-  const height = 50 + rows.length * rowHeight;
-  const title = spec.title || spec.encoding?.x?.title || 'Grafico';
+  return (
+    <div className="relative my-3 rounded-lg border border-border-light bg-surface-primary p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-medium text-text-primary">{title}</div>
+          <div className="text-xs text-text-secondary">{valueLabel}</div>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-text-secondary">
+          <label className="flex items-center gap-1">
+            <span>Orden</span>
+            <select
+              className="rounded-md border border-border-light bg-surface-secondary px-2 py-1 text-text-primary outline-none"
+              value={sortMode}
+              onChange={(event) => onSortChange(event.target.value as SortMode)}
+            >
+              <option value="original">Original</option>
+              <option value="desc">Mayor</option>
+              <option value="asc">Menor</option>
+            </select>
+          </label>
+          <label className="flex items-center gap-1">
+            <span>Zoom</span>
+            <select
+              className="rounded-md border border-border-light bg-surface-secondary px-2 py-1 text-text-primary outline-none"
+              value={String(zoom)}
+              onChange={(event) => onZoomChange(Number(event.target.value))}
+            >
+              <option value="1">100%</option>
+              <option value="1.25">125%</option>
+              <option value="1.5">150%</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      {children}
+      <ChartTooltip tooltip={tooltip} />
+    </div>
+  );
+}
+
+function BarChart({
+  points,
+  zoom,
+  onTooltip,
+}: {
+  points: ChartPoint[];
+  zoom: number;
+  onTooltip: (tooltip: TooltipState) => void;
+}) {
+  const max = Math.max(...points.map((point) => point.value), 1);
 
   return (
-    <div className="my-3 overflow-hidden rounded-lg border border-border-light bg-surface-secondary p-3">
-      <div className="mb-2 text-sm font-medium text-text-primary">{title}</div>
-      <svg viewBox={`0 0 ${width} ${height}`} className="h-auto w-full" role="img" aria-label={title}>
-        {rows.map((row, index) => {
-          const y = 35 + index * rowHeight;
-          const value = numericValue(row, xField);
-          const label = textValue(row, yField);
-          const barWidth = Math.max((value / max) * chartWidth, 1);
+    <div className="overflow-x-auto pb-1">
+      <div className="space-y-2" style={{ minWidth: `${zoom * 100}%` }}>
+        {points.map((point, index) => {
+          const width = Math.max((point.value / max) * 100, 2);
           return (
-            <g key={`${label}-${index}`}>
-              <text x="0" y={y + 15} className="fill-text-secondary text-[12px]">
-                <title>{label}</title>
-                {label.length > 32 ? `${label.slice(0, 31)}...` : label}
-              </text>
-              <rect
-                x={labelWidth}
-                y={y}
-                width={barWidth}
-                height="20"
-                rx="4"
-                className="fill-green-500"
-              />
-              <text x={labelWidth + barWidth + 8} y={y + 15} className="fill-text-primary text-[12px]">
-                {numberFormat.format(value)}
-              </text>
-            </g>
+            <div
+              key={`${point.label}-${index}`}
+              className="grid grid-cols-[minmax(8rem,15rem)_1fr_auto] items-center gap-3"
+              onMouseLeave={() => onTooltip(null)}
+            >
+              <div className="truncate text-xs text-text-secondary" title={point.label}>
+                {point.label}
+              </div>
+              <div className="h-5 overflow-hidden rounded bg-surface-secondary">
+                <div
+                  className="h-full rounded bg-green-500 transition-[width]"
+                  style={{ width: `${width}%` }}
+                  onMouseMove={(event) =>
+                    onTooltip({
+                      label: point.label,
+                      value: point.value,
+                      x: event.nativeEvent.offsetX + event.currentTarget.offsetLeft,
+                      y: event.currentTarget.offsetTop,
+                    })
+                  }
+                />
+              </div>
+              <div className="min-w-16 text-right text-xs tabular-nums text-text-primary">
+                {numberFormat.format(point.value)}
+              </div>
+            </div>
           );
         })}
-      </svg>
+      </div>
     </div>
   );
 }
 
-function VerticalBarChart({
-  spec,
-  rows,
+function LineChart({
+  points,
+  zoom,
+  onTooltip,
 }: {
-  spec: VegaLiteSpec;
-  rows: Record<string, unknown>[];
+  points: ChartPoint[];
+  zoom: number;
+  onTooltip: (tooltip: TooltipState) => void;
 }) {
-  const xField = spec.encoding?.x?.field;
-  const yField = spec.encoding?.y?.field;
-  const max = Math.max(...rows.map((row) => numericValue(row, yField)), 1);
-  const width = 680;
-  const height = 320;
-  const pad = 44;
-  const chartHeight = height - pad * 2;
-  const barGap = 8;
-  const barWidth = Math.max((width - pad * 2 - barGap * (rows.length - 1)) / rows.length, 10);
-  const title = spec.title || spec.encoding?.y?.title || 'Grafico';
-
-  return (
-    <div className="my-3 overflow-hidden rounded-lg border border-border-light bg-surface-secondary p-3">
-      <div className="mb-2 text-sm font-medium text-text-primary">{title}</div>
-      <svg viewBox={`0 0 ${width} ${height}`} className="h-auto w-full" role="img" aria-label={title}>
-        {rows.map((row, index) => {
-          const value = numericValue(row, yField);
-          const label = textValue(row, xField);
-          const barHeight = Math.max((value / max) * chartHeight, 1);
-          const x = pad + index * (barWidth + barGap);
-          const y = height - pad - barHeight;
-          return (
-            <g key={`${label}-${index}`}>
-              <rect x={x} y={y} width={barWidth} height={barHeight} rx="4" className="fill-green-500" />
-              <text
-                x={x + barWidth / 2}
-                y={height - 18}
-                textAnchor="middle"
-                className="fill-text-secondary text-[10px]"
-              >
-                <title>{label}</title>
-                {label.length > 10 ? `${label.slice(0, 9)}...` : label}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-    </div>
-  );
-}
-
-function LineChart({ spec, rows }: { spec: VegaLiteSpec; rows: Record<string, unknown>[] }) {
-  const xField = spec.encoding?.x?.field;
-  const yField = spec.encoding?.y?.field;
-  const values = rows.map((row, index) => ({
-    x: index,
-    label: textValue(row, xField),
-    y: numericValue(row, yField),
-  }));
-  const max = Math.max(...values.map((row) => row.y), 1);
-  const min = Math.min(...values.map((row) => row.y), 0);
-  const width = 680;
-  const height = 320;
-  const pad = 44;
-  const chartWidth = width - pad * 2;
-  const chartHeight = height - pad * 2;
+  const width = 720;
+  const height = 280;
+  const padX = 44;
+  const padY = 34;
+  const max = Math.max(...points.map((point) => point.value), 1);
+  const min = Math.min(...points.map((point) => point.value), 0);
   const range = Math.max(max - min, 1);
-  const title = spec.title || spec.encoding?.y?.title || 'Grafico';
-  const points = values
-    .map((row, index) => {
-      const x = pad + (index / Math.max(values.length - 1, 1)) * chartWidth;
-      const y = height - pad - ((row.y - min) / range) * chartHeight;
-      return `${x},${y}`;
-    })
-    .join(' ');
+  const chartWidth = width - padX * 2;
+  const chartHeight = height - padY * 2;
+  const coords = points.map((point, index) => ({
+    ...point,
+    x: padX + (index / Math.max(points.length - 1, 1)) * chartWidth,
+    y: height - padY - ((point.value - min) / range) * chartHeight,
+  }));
+  const polyline = coords.map((point) => `${point.x},${point.y}`).join(' ');
 
   return (
-    <div className="my-3 overflow-hidden rounded-lg border border-border-light bg-surface-secondary p-3">
-      <div className="mb-2 text-sm font-medium text-text-primary">{title}</div>
-      <svg viewBox={`0 0 ${width} ${height}`} className="h-auto w-full" role="img" aria-label={title}>
-        <polyline fill="none" stroke="currentColor" strokeWidth="3" points={points} className="text-green-500" />
-        {values.map((row, index) => {
-          const x = pad + (index / Math.max(values.length - 1, 1)) * chartWidth;
-          const y = height - pad - ((row.y - min) / range) * chartHeight;
-          return <circle key={`${row.label}-${index}`} cx={x} cy={y} r="4" className="fill-green-500" />;
-        })}
+    <div className="overflow-x-auto pb-1">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="h-auto"
+        style={{ width: `${zoom * 100}%`, minWidth: '100%' }}
+        role="img"
+        aria-label="Gráfico de línea"
+        onMouseLeave={() => onTooltip(null)}
+      >
+        <line x1={padX} y1={height - padY} x2={width - padX} y2={height - padY} className="stroke-border-light" />
+        <line x1={padX} y1={padY} x2={padX} y2={height - padY} className="stroke-border-light" />
+        <polyline fill="none" stroke="currentColor" strokeWidth="3" points={polyline} className="text-green-500" />
+        {coords.map((point, index) => (
+          <g key={`${point.label}-${index}`}>
+            <circle
+              cx={point.x}
+              cy={point.y}
+              r="5"
+              className="fill-green-500"
+              onMouseMove={(event) =>
+                onTooltip({
+                  label: point.label,
+                  value: point.value,
+                  x: event.nativeEvent.offsetX,
+                  y: event.nativeEvent.offsetY,
+                })
+              }
+            />
+            <title>{`${point.label}: ${numberFormat.format(point.value)}`}</title>
+          </g>
+        ))}
       </svg>
+      <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-text-secondary sm:grid-cols-3">
+        {points.map((point, index) => (
+          <div key={`${point.label}-legend-${index}`} className="truncate" title={point.label}>
+            {index + 1}. {point.label}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
 export default function AnalitricsChart({ output }: { output?: string | null }) {
   const payload = parsePayload(output);
-  const spec = payload?.spec ?? null;
-  const rows = Array.isArray(spec?.data?.values) ? spec.data.values : [];
-  const mark = markType(spec?.mark).toLowerCase();
+  const rawPoints = normalizePoints(payload?.points);
+  const [sortMode, setSortMode] = useState<SortMode>('original');
+  const [zoom, setZoom] = useState(1);
+  const [tooltip, setTooltip] = useState<TooltipState>(null);
+  const points = useMemo(() => sortPoints(rawPoints, sortMode), [rawPoints, sortMode]);
 
-  if (!payload || !spec || rows.length === 0) {
-    return <UnsupportedChart reason={payload?.reason} />;
+  if (!payload?.chart_required || points.length === 0) {
+    return <EmptyChart />;
   }
 
-  if (mark === 'bar') {
-    if (isQuantitative(spec.encoding?.x) && !isQuantitative(spec.encoding?.y)) {
-      return <HorizontalBarChart spec={spec} rows={rows} />;
-    }
-    return <VerticalBarChart spec={spec} rows={rows} />;
-  }
+  const title = payload.title || 'Gráfico';
+  const valueLabel = payload.value_field || 'valor';
 
-  if (mark === 'line') {
-    return <LineChart spec={spec} rows={rows} />;
-  }
-
-  return <UnsupportedChart reason={payload.reason} />;
+  return (
+    <ChartShell
+      title={title}
+      valueLabel={valueLabel}
+      sortMode={sortMode}
+      zoom={zoom}
+      tooltip={tooltip}
+      onSortChange={setSortMode}
+      onZoomChange={setZoom}
+    >
+      {payload.chart_type === 'line' ? (
+        <LineChart points={points} zoom={zoom} onTooltip={setTooltip} />
+      ) : (
+        <BarChart points={points} zoom={zoom} onTooltip={setTooltip} />
+      )}
+    </ChartShell>
+  );
 }
