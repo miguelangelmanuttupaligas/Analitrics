@@ -139,8 +139,15 @@ services:
       - "8090"
     env_file:
       - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       ANALITRICS_AGENT_PORT: 8090
+      ANALITRICS_LLM_PROVIDER: ${ANALITRICS_LLM_PROVIDER:-openai}
+      ANALITRICS_LOCAL_BASE_URL: ${ANALITRICS_LOCAL_BASE_URL:-http://host.docker.internal:11434/v1}
+      ANALITRICS_LOCAL_API_KEY: ${ANALITRICS_LOCAL_API_KEY:-local-not-required}
+      ANALITRICS_LOCAL_MODEL: ${ANALITRICS_LOCAL_MODEL:-qwen3:4b-instruct}
+      ANALITRICS_LOCAL_USE_RESPONSE_FORMAT: ${ANALITRICS_LOCAL_USE_RESPONSE_FORMAT:-false}
       MONGO_URI: mongodb://mongodb:27017/LibreChat
       MONGO_DB: LibreChat
       ANALITRICS_POSTGRES_HOST: control-postgres

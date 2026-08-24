@@ -62,6 +62,16 @@ export type AnalitricsFeedback = {
   updatedAt?: string | null;
 };
 
+export type AnalitricsSuggestedFeedback = {
+  stateId?: string;
+  sourceFileId?: string | null;
+  sourceFilename?: string | null;
+  step?: number;
+  label?: string;
+  content?: string;
+  reason?: string;
+};
+
 export type AnalitricsContext = {
   ok?: boolean;
   found?: boolean;
@@ -76,6 +86,7 @@ export type AnalitricsContext = {
   tables?: AnalitricsTable[];
   profiles?: AnalitricsProfile[];
   feedback?: AnalitricsFeedback[];
+  suggestedFeedback?: AnalitricsSuggestedFeedback | null;
   summary?: AnalitricsContextSummary;
 };
 

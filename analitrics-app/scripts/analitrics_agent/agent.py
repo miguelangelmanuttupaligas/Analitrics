@@ -31,7 +31,7 @@ from .repositories import (
 from .schema_context import SchemaContextBuilder
 from .sql_generation import SqlGeneratorFactory
 from .sql_validation import SqlReadOnlyValidator
-from .tracing import TracingManager, set_span_attrs
+from .tracing import TracingManager, current_trace_id, normalize_search_text, set_span_attrs, stable_text_hash
 
 
 class AnalyticalAgent:
@@ -58,12 +58,18 @@ class AnalyticalAgent:
         self._tracing_manager.setup()
         runtime = AgentRuntime()
         result: AgentState | None = None
+        trace_id: str | None = None
         try:
             with self._tracing_manager.tracer.start_as_current_span("analitrics_agent_run") as span:
+                trace_id = current_trace_id(span)
                 set_span_attrs(
                     span,
                     {
+                        "input.value": request.question,
                         "analitrics.question": request.question,
+                        "analitrics.question_normalized": normalize_search_text(request.question),
+                        "analitrics.question_hash": stable_text_hash(request.question),
+                        "analitrics.trace_id": trace_id,
                         "analitrics.run_id": request.run_id,
                         "analitrics.tenant_id": request.tenant_id,
                         "analitrics.user_id": request.user_id,
@@ -79,14 +85,14 @@ class AnalyticalAgent:
                 )
                 if env("ANALITRICS_ENGINE", "langgraph").strip().lower() != "langgraph":
                     raise RuntimeError("Only ANALITRICS_ENGINE=langgraph is supported in the active MVP runtime")
-                emit("Preparando agente analítico...")
                 nodes = self._nodes_factory.create(request, runtime, self._tracing_manager.tracer, progress, token)
                 app = self._build_graph(nodes)
-                emit("Ejecutando flujo NL-SQL...")
                 result = app.invoke({"question": request.question, "run_id": request.run_id or ""})
+                result["trace_id"] = trace_id or ""
                 set_span_attrs(
                     span,
                     {
+                        "output.value": result.get("answer"),
                         "analitrics.engine": result.get("engine") or "langgraph",
                         "analitrics.in_scope": result.get("in_scope"),
                         "analitrics.sql": result.get("sql"),
@@ -96,7 +102,7 @@ class AnalyticalAgent:
                         else None,
                     },
                 )
-            self._run_repository.save_run(request, result)
+            self._run_repository.save_run(request, result, trace_id=trace_id)
             return result
         except Exception as exc:
             if "conversation/message with attachments" in str(exc):
@@ -116,10 +122,11 @@ class AnalyticalAgent:
                     "cache_path": "",
                     "cache_hits": 0,
                     "engine": env("ANALITRICS_ENGINE", "langgraph"),
+                    "trace_id": trace_id or "",
                 }
-                self._run_repository.save_run(request, result)
+                self._run_repository.save_run(request, result, trace_id=trace_id)
                 return result
-            self._run_repository.save_run(request, result, error=str(exc))
+            self._run_repository.save_run(request, result, error=str(exc), trace_id=trace_id)
             raise
         finally:
             runtime.close()
@@ -135,20 +142,22 @@ class AnalyticalAgent:
         graph.add_node("compose_answer", nodes.compose_answer)
         graph.add_node("critique_answer", nodes.critique_answer)
         graph.add_node("generate_chart_spec", nodes.generate_chart_spec)
+        graph.add_node("persist_analysis_state", nodes.persist_analysis_state)
 
         graph.set_entry_point("resolve_and_profile")
         graph.add_edge("resolve_and_profile", "check_question_scope")
         graph.add_conditional_edges(
             "check_question_scope",
             nodes.route_after_scope,
-            {"generate_sql": "generate_sql", "__end__": END},
+            {"generate_sql": "generate_sql", "persist_analysis_state": "persist_analysis_state", "__end__": END},
         )
         graph.add_edge("generate_sql", "validate_sql")
         graph.add_edge("validate_sql", "execute_sql")
         graph.add_edge("execute_sql", "compose_answer")
         graph.add_edge("compose_answer", "critique_answer")
         graph.add_edge("critique_answer", "generate_chart_spec")
-        graph.add_edge("generate_chart_spec", END)
+        graph.add_edge("generate_chart_spec", "persist_analysis_state")
+        graph.add_edge("persist_analysis_state", END)
         return graph.compile()
 
 

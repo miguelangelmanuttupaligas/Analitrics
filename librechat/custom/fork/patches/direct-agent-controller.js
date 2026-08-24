@@ -131,12 +131,23 @@ function inferMermaidFields(rows, chartSpec) {
 
 function buildAnalitricsChartPayload(payload) {
   const chartSpec = payload?.chart_spec && typeof payload.chart_spec === 'object' ? payload.chart_spec : null;
-  const rows = Array.isArray(payload?.rows_preview) ? payload.rows_preview : [];
+  const spec = chartSpec?.spec && typeof chartSpec.spec === 'object' ? chartSpec.spec : null;
+  const rows = Array.isArray(spec?.series)
+    ? spec.series
+    : Array.isArray(payload?.rows_preview)
+      ? payload.rows_preview
+      : [];
   if (!chartSpec || chartSpec.chart_required !== true || rows.length === 0) {
     return null;
   }
 
-  const { categoryField, valueField } = inferMermaidFields(rows, chartSpec);
+  const xKey = typeof spec?.x_key === 'string' ? spec.x_key : null;
+  const yKeys = Array.isArray(spec?.y_keys) ? spec.y_keys.filter((key) => typeof key === 'string') : [];
+  const explicitValueField = yKeys[0] || null;
+  const { categoryField, valueField } =
+    xKey && explicitValueField
+      ? { categoryField: xKey, valueField: explicitValueField }
+      : inferMermaidFields(rows, chartSpec);
   if (!categoryField || !valueField) {
     return null;
   }
@@ -155,7 +166,7 @@ function buildAnalitricsChartPayload(payload) {
   return {
     chart_required: true,
     chart_type: chartSpec.chart_type === 'line' ? 'line' : 'bar',
-    title: cleanMermaidLabel((valueField || 'Valor') + ' por ' + (categoryField || 'categoría')),
+    title: spec?.title ? String(spec.title).slice(0, 120) : cleanMermaidLabel((valueField || 'Valor') + ' por ' + (categoryField || 'categoría')),
     category_field: categoryField,
     value_field: valueField,
     points,
@@ -168,12 +179,24 @@ function buildAnalitricsToolContent(payload, answer) {
   const tables = Array.isArray(payload?.tables) ? payload.tables : [];
   const plan = payload?.plan && typeof payload.plan === 'object' ? payload.plan : {};
   const chartSpec = payload?.chart_spec && typeof payload.chart_spec === 'object' ? payload.chart_spec : null;
+  const analyticalContext = payload?.analytical_context && typeof payload.analytical_context === 'object' ? payload.analytical_context : {};
+  const analysisState = payload?.analysis_state && typeof payload.analysis_state === 'object' ? payload.analysis_state : {};
+  const feedbackProposal =
+    payload?.feedback_proposal && typeof payload.feedback_proposal === 'object'
+      ? payload.feedback_proposal
+      : analyticalContext?.feedback_proposal && typeof analyticalContext.feedback_proposal === 'object'
+        ? analyticalContext.feedback_proposal
+        : null;
   const contextOutput = [
     'Tenant: ' + String(payload?.tenantId || ''),
     'Run ID: ' + String(payload?.runId || ''),
+    'Trace ID: ' + String(payload?.traceId || ''),
     'Conversation ID: ' + String(payload?.conversationId || ''),
     'Cache DuckDB: ' + String(payload?.cachePath || ''),
     'Cache hits: ' + String(payload?.cacheHits ?? 0),
+    'Request kind: ' + String(analyticalContext?.request_kind || ''),
+    'Selected analysis state: ' + String(analyticalContext?.selected_analysis_state?.state_id || ''),
+    'Recent analysis states: ' + String(Array.isArray(analyticalContext?.recent_analysis_states) ? analyticalContext.recent_analysis_states.length : 0),
     '',
     'Archivos:',
     formatAnalitricsJson(
@@ -229,6 +252,7 @@ function buildAnalitricsToolContent(payload, answer) {
           file_count: files.length,
           table_count: tables.length,
           cache_path: payload?.cachePath || '',
+          request_kind: analyticalContext?.request_kind || '',
         }),
         output: contextOutput,
         progress: 1,
@@ -268,25 +292,76 @@ function buildAnalitricsToolContent(payload, answer) {
     });
   }
 
+  if (feedbackProposal?.suggested) {
+    content.push({
+      type: 'tool_call',
+      tool_call: {
+        id: 'analitrics_feedback_' + String(payload?.runId || crypto.randomUUID()).replace(/[^a-zA-Z0-9_-]/g, '_'),
+        name: 'analitrics_feedback',
+        args: formatAnalitricsJson({
+          step: feedbackProposal.step,
+          source_file_id: feedbackProposal.source_file_id,
+          source_filename: feedbackProposal.source_filename,
+        }),
+        output: formatAnalitricsJson({
+          suggested: true,
+          step: feedbackProposal.step,
+          label: feedbackProposal.label,
+          content: feedbackProposal.content,
+          source_file_id: feedbackProposal.source_file_id,
+          source_filename: feedbackProposal.source_filename,
+          reason: feedbackProposal.reason,
+        }),
+        progress: 1,
+      },
+    });
+  }
+
+  if (analysisState?.state_id || analysisState?.intent || analysisState?.last_sql) {
+    content.push({
+      type: 'tool_call',
+      tool_call: {
+        id: 'analitrics_state_' + String(payload?.runId || crypto.randomUUID()).replace(/[^a-zA-Z0-9_-]/g, '_'),
+        name: 'analitrics_state',
+        args: formatAnalitricsJson({
+          state_id: analysisState.state_id,
+          intent: analysisState.intent,
+          metric: analysisState.metric,
+        }),
+        output: formatAnalitricsJson({
+          state_id: analysisState.state_id,
+          intent: analysisState.intent,
+          metric: analysisState.metric,
+          dimensions: analysisState.dimensions,
+          filters: analysisState.filters,
+          dataset: analysisState.dataset,
+          row_count: analysisState.row_count,
+        }),
+        progress: 1,
+      },
+    });
+  }
+
   return content;
 }
 
 function mapAnalitricsProgress(message) {
-  const value = String(message || '').toLowerCase();
-  if (value.includes('resolviendo archivos') || value.includes('cargando duckdb')) {
-    return 'Preparando datos...';
+  const value = String(message || '').replace(/\s+/g, ' ').trim();
+  if (!value) {
+    return '';
   }
+  const normalized = value.toLowerCase();
   if (
-    value.includes('validando alcance') ||
-    value.includes('generando sql') ||
-    value.includes('ejecutando consulta')
+    normalized.includes('buscando archivos adjuntos') ||
+    normalized.startsWith('encontré ') ||
+    normalized.includes('preparando el espacio analítico')
   ) {
-    return 'Consultando datos...';
+    return 'Preparando archivos y contexto del chat...';
   }
-  if (value.includes('redactando respuesta') || value.includes('generando gráfico') || value.includes('generando grafico')) {
-    return 'Redactando respuesta...';
+  if (value.length <= 180) {
+    return value;
   }
-  return '';
+  return value.slice(0, 177).trimEnd() + '...';
 }
 
 async function runAnalitricsDirectController(req, res) {

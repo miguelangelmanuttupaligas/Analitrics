@@ -39,6 +39,7 @@ class CatalogRepository:
         self._connection_factory = connection_factory
         self._ingestion_status_builder = IngestionStatusBuilder()
         self._business_summary_builder = BusinessSummaryBuilder()
+        self._max_analysis_states = int(env("ANALITRICS_MAX_ANALYSIS_STATES", "8"))
 
     def find_conversation(self, request: AgentRequest) -> dict[str, Any] | None:
         if not request.conversation_id:
@@ -47,7 +48,7 @@ class CatalogRepository:
         with self._connection_factory.connect() as con:
             row = con.execute(
                 """
-                select tenant_id, user_id, conversation_id, cache_path, processed_files, updated_at
+                select tenant_id, user_id, conversation_id, cache_path, processed_files, pending_clarification, updated_at
                 from analysis_catalog_sessions
                 where tenant_id = %s and user_id = %s and conversation_id = %s
                 """,
@@ -84,6 +85,7 @@ class CatalogRepository:
                 "cachePath": row["cache_path"],
                 "tableMap": table_map,
                 "processedFiles": processed_files,
+                "pendingClarification": row.get("pending_clarification"),
                 "updatedAt": row["updated_at"],
             }
 
@@ -92,7 +94,7 @@ class CatalogRepository:
             conversation = con.execute(
                 """
                 select tenant_id, user_id, conversation_id, cache_path, files,
-                       table_map, processed_files, last_cache_hits, created_at, updated_at
+                       table_map, processed_files, pending_clarification, last_cache_hits, created_at, updated_at
                 from analysis_catalog_sessions
                 where tenant_id = %s and user_id = %s and conversation_id = %s
                 """,
@@ -135,8 +137,21 @@ class CatalogRepository:
                 """,
                 (tenant_id, user_id, conversation_id),
             ).fetchall()
+            analysis_state_rows = con.execute(
+                """
+                select state_id, message_id, run_id, question, answer_summary, intent, metric,
+                       dimensions, filters, dataset, last_sql, last_chart, row_count, state, created_at
+                from analysis_conversation_states
+                where tenant_id = %s and user_id = %s and conversation_id = %s
+                order by state_id desc
+                limit %s
+                """,
+                (tenant_id, user_id, conversation_id, self._max_analysis_states),
+            ).fetchall()
 
         profiles = [row["profile"] for row in profile_rows]
+        analysis_states = [self._analysis_state_row(row) for row in reversed(analysis_state_rows)]
+        suggested_feedback = self._latest_feedback_proposal(analysis_states)
         tables = [
             {
                 "table": row["table_name"],
@@ -178,6 +193,9 @@ class CatalogRepository:
             "tables": tables,
             "profiles": profiles,
             "feedback": feedback,
+            "recentAnalysisStates": analysis_states,
+            "suggestedFeedback": suggested_feedback,
+            "pendingClarification": conversation["pending_clarification"],
             "ingestionStatus": self._ingestion_status_builder.build(
                 files,
                 tables,
@@ -217,26 +235,42 @@ class CatalogRepository:
         with self._connection_factory.connect() as con:
             row = con.execute(
                 """
-                insert into analysis_catalog_feedback (
-                    tenant_id, user_id, conversation_id, source_file_id, source_filename,
-                    step, label, content, created_at, updated_at
-                )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                returning feedback_id, source_file_id, source_filename, step, label, content, created_at, updated_at
+                select feedback_id, source_file_id, source_filename, step, label, content, created_at, updated_at
+                from analysis_catalog_feedback
+                where tenant_id = %s
+                  and user_id = %s
+                  and conversation_id = %s
+                  and step = %s
+                  and coalesce(source_file_id, '') = coalesce(%s, '')
+                  and content = %s
+                order by updated_at desc
+                limit 1
                 """,
-                (
-                    tenant_id,
-                    user_id,
-                    conversation_id,
-                    source_file_id,
-                    source_filename,
-                    step,
-                    label,
-                    content,
-                    now,
-                    now,
-                ),
+                (tenant_id, user_id, conversation_id, step, source_file_id, content),
             ).fetchone()
+            if row is None:
+                row = con.execute(
+                    """
+                    insert into analysis_catalog_feedback (
+                        tenant_id, user_id, conversation_id, source_file_id, source_filename,
+                        step, label, content, created_at, updated_at
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    returning feedback_id, source_file_id, source_filename, step, label, content, created_at, updated_at
+                    """,
+                    (
+                        tenant_id,
+                        user_id,
+                        conversation_id,
+                        source_file_id,
+                        source_filename,
+                        step,
+                        label,
+                        content,
+                        now,
+                        now,
+                    ),
+                ).fetchone()
         return {
             "feedbackId": str(row["feedback_id"]),
             "sourceFileId": row["source_file_id"],
@@ -247,6 +281,113 @@ class CatalogRepository:
             "createdAt": row["created_at"].isoformat() if row["created_at"] else None,
             "updatedAt": row["updated_at"].isoformat() if row["updated_at"] else None,
         }
+
+    def find_recent_analysis_states(self, request: AgentRequest, limit: int | None = None) -> list[dict[str, Any]]:
+        if not request.conversation_id:
+            return []
+        user_id = self._user_id(request)
+        row_limit = limit or self._max_analysis_states
+        with self._connection_factory.connect() as con:
+            rows = con.execute(
+                """
+                select state_id, message_id, run_id, question, answer_summary, intent, metric,
+                       dimensions, filters, dataset, last_sql, last_chart, row_count, state, created_at
+                from analysis_conversation_states
+                where tenant_id = %s and user_id = %s and conversation_id = %s
+                order by state_id desc
+                limit %s
+                """,
+                (request.tenant_id, user_id, request.conversation_id, row_limit),
+            ).fetchall()
+        return [self._analysis_state_row(row) for row in reversed(rows)]
+
+    def find_pending_clarification(self, request: AgentRequest) -> dict[str, Any] | None:
+        if not request.conversation_id:
+            return None
+        with self._connection_factory.connect() as con:
+            row = con.execute(
+                """
+                select pending_clarification
+                from analysis_catalog_sessions
+                where tenant_id = %s and user_id = %s and conversation_id = %s
+                """,
+                (request.tenant_id, self._user_id(request), request.conversation_id),
+            ).fetchone()
+        pending = (row or {}).get("pending_clarification")
+        return pending if isinstance(pending, dict) and pending.get("pending") else None
+
+    def save_pending_clarification(self, request: AgentRequest, pending: dict[str, Any] | None) -> None:
+        if not request.conversation_id or not pending:
+            return
+        now = utc_now()
+        with self._connection_factory.connect() as con:
+            con.execute(
+                """
+                update analysis_catalog_sessions
+                set pending_clarification = %s::jsonb,
+                    updated_at = %s
+                where tenant_id = %s and user_id = %s and conversation_id = %s
+                """,
+                (self._json(pending), now, request.tenant_id, self._user_id(request), request.conversation_id),
+            )
+
+    def clear_pending_clarification(self, request: AgentRequest) -> None:
+        if not request.conversation_id:
+            return
+        now = utc_now()
+        with self._connection_factory.connect() as con:
+            con.execute(
+                """
+                update analysis_catalog_sessions
+                set pending_clarification = null,
+                    updated_at = %s
+                where tenant_id = %s and user_id = %s and conversation_id = %s
+                """,
+                (now, request.tenant_id, self._user_id(request), request.conversation_id),
+            )
+
+    def save_analysis_state(self, request: AgentRequest, analysis_state: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not request.conversation_id or not analysis_state:
+            return None
+        self.ensure_schema_if_allowed()
+        user_id = self._user_id(request)
+        now = utc_now()
+        with self._connection_factory.connect() as con:
+            with con.transaction():
+                row = con.execute(
+                    """
+                    insert into analysis_conversation_states (
+                        tenant_id, user_id, conversation_id, message_id, run_id, question,
+                        answer_summary, intent, metric, dimensions, filters, dataset,
+                        last_sql, last_chart, row_count, state, created_at
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb,
+                            %s::jsonb, %s, %s::jsonb, %s, %s::jsonb, %s)
+                    returning state_id, message_id, run_id, question, answer_summary, intent, metric,
+                              dimensions, filters, dataset, last_sql, last_chart, row_count, state, created_at
+                    """,
+                    (
+                        request.tenant_id,
+                        user_id,
+                        request.conversation_id,
+                        analysis_state.get("message_id"),
+                        analysis_state.get("run_id"),
+                        analysis_state.get("question") or request.question,
+                        analysis_state.get("answer_summary"),
+                        analysis_state.get("intent"),
+                        analysis_state.get("metric"),
+                        self._json(analysis_state.get("dimensions") or []),
+                        self._json(analysis_state.get("filters") or []),
+                        self._json(analysis_state.get("dataset") or {}),
+                        analysis_state.get("last_sql"),
+                        self._json(analysis_state.get("last_chart")) if analysis_state.get("last_chart") is not None else None,
+                        int(analysis_state.get("row_count") or 0),
+                        self._json(analysis_state.get("state") or {}),
+                        now,
+                    ),
+                ).fetchone()
+                self._prune_analysis_states(con, request.tenant_id, user_id, request.conversation_id)
+        return self._analysis_state_row(row)
 
     def find_feedback_for_request(
         self,
@@ -417,11 +558,18 @@ class CatalogRepository:
                         files jsonb not null default '[]'::jsonb,
                         table_map jsonb not null default '{}'::jsonb,
                         processed_files jsonb not null default '[]'::jsonb,
+                        pending_clarification jsonb,
                         last_cache_hits integer not null default 0,
                         created_at timestamptz not null,
                         updated_at timestamptz not null,
                         primary key (tenant_id, user_id, conversation_id)
                     )
+                    """
+                )
+                con.execute(
+                    """
+                    alter table analysis_catalog_sessions
+                    add column if not exists pending_clarification jsonb
                     """
                 )
                 con.execute(
@@ -478,6 +626,45 @@ class CatalogRepository:
                     """
                     create index if not exists idx_analysis_catalog_feedback_source
                     on analysis_catalog_feedback (tenant_id, user_id, conversation_id, source_file_id, step)
+                    """
+                )
+                con.execute(
+                    """
+                    create table if not exists analysis_conversation_states (
+                        state_id bigserial primary key,
+                        tenant_id text not null,
+                        user_id text not null,
+                        conversation_id text not null,
+                        message_id text,
+                        run_id text,
+                        question text not null,
+                        answer_summary text,
+                        intent text,
+                        metric text,
+                        dimensions jsonb not null default '[]'::jsonb,
+                        filters jsonb not null default '[]'::jsonb,
+                        dataset jsonb not null default '{}'::jsonb,
+                        last_sql text,
+                        last_chart jsonb,
+                        row_count integer not null default 0,
+                        state jsonb not null default '{}'::jsonb,
+                        created_at timestamptz not null,
+                        foreign key (tenant_id, user_id, conversation_id)
+                            references analysis_catalog_sessions (tenant_id, user_id, conversation_id)
+                            on delete cascade
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    create index if not exists idx_analysis_conversation_states_recent
+                    on analysis_conversation_states (tenant_id, user_id, conversation_id, state_id desc)
+                    """
+                )
+                con.execute(
+                    """
+                    create index if not exists idx_analysis_conversation_states_message
+                    on analysis_conversation_states (tenant_id, user_id, conversation_id, message_id)
                     """
                 )
 
@@ -559,3 +746,62 @@ class CatalogRepository:
 
     def _json(self, value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, default=str)
+
+    def _prune_analysis_states(
+        self,
+        con: psycopg.Connection,
+        tenant_id: str,
+        user_id: str,
+        conversation_id: str,
+    ) -> None:
+        con.execute(
+            """
+            delete from analysis_conversation_states
+            where tenant_id = %s
+              and user_id = %s
+              and conversation_id = %s
+              and state_id not in (
+                  select state_id
+                  from analysis_conversation_states
+                  where tenant_id = %s and user_id = %s and conversation_id = %s
+                  order by state_id desc
+                  limit %s
+              )
+            """,
+            (tenant_id, user_id, conversation_id, tenant_id, user_id, conversation_id, self._max_analysis_states),
+        )
+
+    def _analysis_state_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "state_id": str(row["state_id"]),
+            "message_id": row["message_id"],
+            "run_id": row["run_id"],
+            "question": row["question"],
+            "answer_summary": row["answer_summary"],
+            "intent": row["intent"],
+            "metric": row["metric"],
+            "dimensions": row["dimensions"] or [],
+            "filters": row["filters"] or [],
+            "dataset": row["dataset"] or {},
+            "last_sql": row["last_sql"],
+            "last_chart": row["last_chart"],
+            "row_count": int(row["row_count"] or 0),
+            "state": row["state"] or {},
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        }
+
+    def _latest_feedback_proposal(self, analysis_states: list[dict[str, Any]]) -> dict[str, Any] | None:
+        for analysis_state in reversed(analysis_states):
+            state = analysis_state.get("state") or {}
+            proposal = state.get("feedback_proposal")
+            if isinstance(proposal, dict) and proposal.get("suggested"):
+                return {
+                    "stateId": analysis_state.get("state_id"),
+                    "step": proposal.get("step"),
+                    "label": proposal.get("label"),
+                    "content": proposal.get("content"),
+                    "sourceFileId": proposal.get("source_file_id"),
+                    "sourceFilename": proposal.get("source_filename"),
+                    "reason": proposal.get("reason"),
+                }
+        return None

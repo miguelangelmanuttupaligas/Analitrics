@@ -92,9 +92,16 @@ class AgentRunRepository:
     def __init__(self, database_factory: MongoDatabaseFactory) -> None:
         self._database_factory = database_factory
 
-    def save_run(self, request: AgentRequest, result: AgentState | None, error: str | None = None) -> None:
+    def save_run(
+        self,
+        request: AgentRequest,
+        result: AgentState | None,
+        error: str | None = None,
+        trace_id: str | None = None,
+    ) -> None:
         doc: dict[str, Any] = {
             "runId": request.run_id,
+            "traceId": trace_id or (result or {}).get("trace_id"),
             "tenantId": request.tenant_id,
             "userId": request.user_id,
             "conversationId": request.conversation_id,

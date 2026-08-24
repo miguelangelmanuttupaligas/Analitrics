@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   AlertCircle,
   CalendarDays,
@@ -611,6 +611,22 @@ const feedbackBelongsToSource = (item: AnalitricsFeedback, source: FeedbackSourc
   return false;
 };
 
+const suggestedFeedbackBelongsToSource = (
+  item: { sourceFileId?: string | null; sourceFilename?: string | null } | null | undefined,
+  source: FeedbackSource | undefined,
+) => {
+  if (!item || !source) {
+    return false;
+  }
+  if (item.sourceFileId) {
+    return item.sourceFileId === source.fileId;
+  }
+  if (item.sourceFilename && source.filename) {
+    return item.sourceFilename === source.filename;
+  }
+  return false;
+};
+
 function CatalogFeedbackCard({
   step,
   conversationId,
@@ -619,6 +635,7 @@ function CatalogFeedbackCard({
   source,
   expanded,
   onToggle,
+  suggestedContent,
 }: {
   step: CatalogFeedbackStep;
   conversationId?: string | null;
@@ -627,10 +644,17 @@ function CatalogFeedbackCard({
   source?: FeedbackSource;
   expanded: boolean;
   onToggle: () => void;
+  suggestedContent?: string;
 }) {
   const [content, setContent] = useState('');
   const saveFeedback = useSaveAnalitricsCatalogFeedback(conversationId);
   const canSave = !disabled && content.trim().length > 0 && !saveFeedback.isLoading;
+
+  useEffect(() => {
+    if (expanded && suggestedContent && !content.trim()) {
+      setContent(suggestedContent);
+    }
+  }, [content, expanded, suggestedContent]);
 
   const handleSave = () => {
     if (!canSave) {
@@ -735,6 +759,10 @@ export default function AnalitricsContextPanel({ conversationId }: AnalitricsCon
     ) || datasets[0];
   const feedback = data?.feedback ?? [];
   const sourceFeedback = feedback.filter((item) => feedbackBelongsToSource(item, selectedSource));
+  const suggestedFeedback = data?.suggestedFeedback;
+  const sourceSuggestedFeedback = suggestedFeedbackBelongsToSource(suggestedFeedback, selectedSource)
+    ? suggestedFeedback
+    : null;
   const hasProfile = Boolean(data?.found && datasets.length > 0);
   const metricCandidates = selectedDataset?.metricCandidates ?? [];
   const segmentCandidates = selectedDataset?.segmentCandidates ?? [];
@@ -838,6 +866,27 @@ export default function AnalitricsContextPanel({ conversationId }: AnalitricsCon
               onChange={setSelectedFileId}
             />
 
+            {sourceSuggestedFeedback?.content && (
+              <InsightSection icon={AlertCircle} title="Corrección sugerida">
+                <div className="space-y-3">
+                  <p className="text-xs leading-relaxed text-text-secondary">
+                    El agente detectó una corrección que puede mejorar futuras consultas.
+                  </p>
+                  <p className="rounded-lg border border-border-light bg-surface-primary-alt p-3 text-xs text-text-primary">
+                    {sourceSuggestedFeedback.content}
+                  </p>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-border-light px-2.5 py-1.5 text-xs font-medium text-text-primary transition-colors hover:bg-surface-hover"
+                    onClick={() => setActiveFeedbackStep(Number(sourceSuggestedFeedback.step || 5))}
+                  >
+                    <PencilLine className="size-3.5" aria-hidden="true" />
+                    Revisar y guardar
+                  </button>
+                </div>
+              </InsightSection>
+            )}
+
             <InsightSection icon={PencilLine} title="Catálogo enriquecido">
               <div className="space-y-3">
                 <div>
@@ -879,6 +928,9 @@ export default function AnalitricsContextPanel({ conversationId }: AnalitricsCon
                     source={selectedSource}
                     expanded={activeFeedbackStep === step.step}
                     onToggle={() => setActiveFeedbackStep((current) => (current === step.step ? 0 : step.step))}
+                    suggestedContent={
+                      sourceSuggestedFeedback?.step === step.step ? sourceSuggestedFeedback.content : undefined
+                    }
                   />
                 ))}
               </div>

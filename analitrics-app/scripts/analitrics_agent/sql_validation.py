@@ -14,7 +14,18 @@ class SqlReadOnlyValidator:
     def _validate_known_tables(self, sql: str, known_tables: list[str]) -> None:
         allowed = set(known_tables)
         expressions = sqlglot.parse(sql, read="duckdb")
-        used_tables = {table.name for expression in expressions for table in expression.find_all(exp.Table)}
+        cte_names = {
+            str(cte.alias)
+            for expression in expressions
+            for cte in expression.find_all(exp.CTE)
+            if cte.alias
+        }
+        used_tables = {
+            table.name
+            for expression in expressions
+            for table in expression.find_all(exp.Table)
+            if table.name not in cte_names
+        }
         unknown = sorted(table for table in used_tables if table not in allowed)
         if unknown:
             raise RuntimeError(f"SQL references unavailable tables: {unknown}. Available tables: {sorted(allowed)}")

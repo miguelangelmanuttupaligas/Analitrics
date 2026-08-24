@@ -64,7 +64,8 @@ analitrics-profile:
 		echo "   or: FILENAME=data_2024_2026.xlsx make analitrics-profile"; \
 		exit 2; \
 	fi
-	@docker run --rm --user "$$(id -u):$$(id -g)" --network network-analitrics --env-file librechat/custom/.env \
+	@set -a; source <(grep -v '^UID=' librechat/custom/.env); set +a; \
+	docker run --rm --user "$$(id -u):$$(id -g)" --network network-analitrics --add-host host.docker.internal:host-gateway --env-file librechat/custom/.env \
 		-e MONGO_URI=mongodb://mongodb:27017/LibreChat \
 		-e MONGO_DB=LibreChat \
 		-e AWS_ENDPOINT_URL=http://storage-rustfs:9000 \
@@ -82,7 +83,8 @@ analitrics-nl-sql:
 		echo "   or: QUESTION='pregunta...' FILENAME=data_2024_2026.xlsx make analitrics-nl-sql"; \
 		exit 2; \
 	fi
-	@docker run --rm --user "$$(id -u):$$(id -g)" --network network-analitrics --env-file librechat/custom/.env \
+	@set -a; source <(grep -v '^UID=' librechat/custom/.env); set +a; \
+	docker run --rm --user "$$(id -u):$$(id -g)" --network network-analitrics --add-host host.docker.internal:host-gateway --env-file librechat/custom/.env \
 		-e MONGO_URI=mongodb://mongodb:27017/LibreChat \
 		-e MONGO_DB=LibreChat \
 		-e AWS_ENDPOINT_URL=http://storage-rustfs:9000 \
@@ -114,16 +116,21 @@ analitrics-agent:
 		echo "Run: make librechat up"; \
 		exit 2; \
 	fi
-	@docker run --rm --user "$$(id -u):$$(id -g)" --network network-analitrics --env-file librechat/custom/.env \
+	@set -a; source <(grep -v '^UID=' librechat/custom/.env); set +a; \
+	docker run --rm --user "$$(id -u):$$(id -g)" --network network-analitrics --add-host host.docker.internal:host-gateway --env-file librechat/custom/.env \
 		-e MONGO_URI=mongodb://mongodb:27017/LibreChat \
 		-e MONGO_DB=LibreChat \
 		-e AWS_ENDPOINT_URL=http://storage-rustfs:9000 \
+		-e AWS_ACCESS_KEY_ID="$${RUSTFS_ANALYTICS_ACCESS_KEY_ID:-}" \
+		-e AWS_SECRET_ACCESS_KEY="$${RUSTFS_ANALYTICS_SECRET_ACCESS_KEY:-}" \
+		-e AWS_REGION="$${RUSTFS_REGION:-us-east-1}" \
 		-e AWS_BUCKET_NAME="$${RUSTFS_BUCKET_NAME:-librechat}" \
 		-e ANALITRICS_TRACING_ENABLED="$${ANALITRICS_TRACING_ENABLED:-true}" \
 		-e OTEL_EXPORTER_OTLP_ENDPOINT="$${OTEL_EXPORTER_OTLP_ENDPOINT:-http://phoenix:4317}" \
 		-e PHOENIX_PROJECT_NAME="$${PHOENIX_PROJECT_NAME:-analitrics-mvp}" \
+		-e PYTHONPATH=/app/scripts \
 		-v /var/analitrics/analytics:/var/analitrics/analytics \
-		analitrics-app:local python -m analitrics_agent.cli $${FILE_ID:+--file-id "$$FILE_ID"} $${FILENAME:+--filename "$$FILENAME"} $${FILE_IDS:+--file-ids "$$FILE_IDS"} $${FILENAMES:+--filenames "$$FILENAMES"} $${USER_ID:+--user-id "$$USER_ID"} --conversation-id "$$CONVERSATION_ID" $${MESSAGE_ID:+--message-id "$$MESSAGE_ID"} --question "$$QUESTION"
+		analitrics-app:local -m analitrics_agent.cli $${FILE_ID:+--file-id "$$FILE_ID"} $${FILENAME:+--filename "$$FILENAME"} $${FILE_IDS:+--file-ids "$$FILE_IDS"} $${FILENAMES:+--filenames "$$FILENAMES"} $${USER_ID:+--user-id "$$USER_ID"} --conversation-id "$$CONVERSATION_ID" $${MESSAGE_ID:+--message-id "$$MESSAGE_ID"} --question "$$QUESTION"
 
 prepare-dirs:
 	@set -euo pipefail; \

@@ -211,7 +211,6 @@ class AgentHttpHandler(BaseHTTPRequestHandler):
                 if chunk:
                     self._send_sse({"type": "token", "delta": chunk})
 
-            progress("Iniciando análisis...")
             result = AnalyticalAgentFactory.get_agent().run(request, progress=progress, token=token)
             self._send_sse({"type": "final", "payload": state_output(request, result)})
             self._send_sse("[DONE]")

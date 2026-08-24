@@ -25,6 +25,7 @@ class AgentRequest:
 
 class AgentState(TypedDict, total=False):
     run_id: str
+    trace_id: str
     question: str
     metadata: FileMetadata
     files: list[FileMetadata]
@@ -34,10 +35,13 @@ class AgentState(TypedDict, total=False):
     profiles: list[dict[str, Any]]
     catalog_feedback: list[dict[str, Any]]
     analytical_context: dict[str, Any]
+    analysis_state: dict[str, Any]
     in_scope: bool
     scope_reason: str
     plan: dict[str, str]
     sql: str
+    sql_validation_attempt: int
+    sql_repaired: bool
     rows: list[dict[str, Any]]
     answer: str
     critic: dict[str, Any]
@@ -54,6 +58,7 @@ def state_output(request: AgentRequest, state: AgentState) -> dict[str, Any]:
     return {
         "agent": state.get("engine") or "langgraph-file-analyst",
         "runId": state.get("run_id") or request.run_id,
+        "traceId": state.get("trace_id"),
         "tenantId": request.tenant_id,
         "userId": request.user_id,
         "conversationId": request.conversation_id,
@@ -67,6 +72,8 @@ def state_output(request: AgentRequest, state: AgentState) -> dict[str, Any]:
         "tables": state.get("profiles"),
         "catalog_feedback": state.get("catalog_feedback") or [],
         "analytical_context": state.get("analytical_context") or {},
+        "analysis_state": state.get("analysis_state") or {},
+        "feedback_proposal": (state.get("analytical_context") or {}).get("feedback_proposal"),
         "plan": state.get("plan"),
         "sql": state.get("sql"),
         "row_count": len(state.get("rows") or []),
