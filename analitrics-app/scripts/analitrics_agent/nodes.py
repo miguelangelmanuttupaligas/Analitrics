@@ -250,7 +250,7 @@ class AnalyticalAgentNodes:
                         "skipped": True,
                         "reason": "Metadata literal answered after LLM planner classification.",
                     },
-                    "chart_spec": {"chart_required": False, "chart_intent": False, "renderer": "recharts", "spec": None},
+                    "chart_spec": {"chart_required": False, "chart_intent": False, "renderer": "echarts", "spec": None},
                     "cache_path": str(workspace.cache_path) if workspace.cache_path else "",
                     "cache_hits": workspace.cache_hits,
                 }
@@ -308,7 +308,7 @@ class AnalyticalAgentNodes:
                     "answer": answer,
                     "rows": [],
                     "sql": "",
-                    "chart_spec": {"chart_required": False, "chart_intent": False, "renderer": "recharts", "spec": None},
+                    "chart_spec": {"chart_required": False, "chart_intent": False, "renderer": "echarts", "spec": None},
                 }
             if conversation_plan.get("needs_clarification") and not analytical_context.get("feedback_proposal"):
                 self._emit_progress("La pregunta admite más de una lectura; pediré una aclaración antes de consultar.")
@@ -364,7 +364,7 @@ class AnalyticalAgentNodes:
                     "answer": answer,
                     "rows": [],
                     "sql": "",
-                        "chart_spec": {"chart_required": False, "chart_intent": False, "renderer": "recharts", "spec": None},
+                    "chart_spec": {"chart_required": False, "chart_intent": False, "renderer": "echarts", "spec": None},
                 }
             if conversation_plan.get("requires_sql") is True and not conversation_plan.get("needs_clarification"):
                 reason = str(conversation_plan.get("reason") or "conversation_plan_in_scope")
@@ -623,7 +623,7 @@ class AnalyticalAgentNodes:
                     "chart_required": False,
                     "chart_intent": False,
                     "chart_type": None,
-                    "renderer": "recharts",
+                    "renderer": "echarts",
                     "spec": None,
                     "reason": "El usuario no pidió gráfico.",
                 }
@@ -698,6 +698,8 @@ class AnalyticalAgentNodes:
     def route_after_answer(self, state: AgentState) -> Literal["critique_answer", "generate_chart_spec", "persist_analysis_state"]:
         if not self._should_skip_critic(state):
             return "critique_answer"
+        if self._chart_intent(state):
+            return "generate_chart_spec"
         state["critic"] = {
             "approved": True,
             "issue": None,
@@ -708,19 +710,21 @@ class AnalyticalAgentNodes:
         state["chart_spec"] = {
             "chart_required": False,
             "chart_intent": False,
-            "renderer": "recharts",
+            "renderer": "echarts",
             "spec": None,
             "reason": "El usuario no pidió gráfico.",
         }
         return "persist_analysis_state"
 
     def route_after_critic(self, state: AgentState) -> Literal["generate_chart_spec", "persist_analysis_state"]:
+        if self._chart_intent(state):
+            return "generate_chart_spec"
         state["chart_spec"] = {
             "chart_required": False,
             "chart_intent": False,
-            "renderer": "recharts",
+            "renderer": "echarts",
             "spec": None,
-            "reason": "La generación de gráficos está deshabilitada.",
+            "reason": "El usuario no pidió gráfico.",
         }
         return "persist_analysis_state"
 
@@ -1033,7 +1037,7 @@ class AnalyticalAgentNodes:
             "chart_required": True,
             "chart_intent": True,
             "chart_type": chart_type,
-            "renderer": "recharts",
+            "renderer": "echarts",
             "spec": {
                 "title": str(plan.get("effective_question") or state.get("question") or "")[:120],
                 "x_key": x_key,
@@ -1043,7 +1047,7 @@ class AnalyticalAgentNodes:
                 "limit": len(rows),
                 "value_format": "number",
                 "category_label": x_key,
-                "notes": "Grafico simple generado sin llamada LLM adicional.",
+                "notes": "Grafico simple generado desde la intención del planner.",
             },
             "reason": "Grafico simple detectado desde columnas resultantes.",
         }

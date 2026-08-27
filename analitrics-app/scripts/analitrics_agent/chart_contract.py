@@ -19,8 +19,10 @@ class AnalitricsChartSpecNormalizer:
         if not rows:
             return None
         columns = list(rows[0].keys())
-        spec = raw_spec or {}
-        chart_type = str(spec.get("type") or spec.get("chart_type") or "bar").lower()
+        raw_spec = raw_spec or {}
+        nested_spec = raw_spec.get("spec") if isinstance(raw_spec.get("spec"), dict) else None
+        spec = nested_spec or raw_spec
+        chart_type = str(spec.get("type") or raw_spec.get("chart_type") or spec.get("chart_type") or "bar").lower()
         if chart_type not in VALID_CHART_TYPES:
             chart_type = "bar"
 

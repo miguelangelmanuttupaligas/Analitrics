@@ -79,10 +79,21 @@ class DashboardRepository:
         dashboard_title = (title or self._title_from_question(seed_question)).strip()
 
         preview = self._execute_seed_preview(sql, known_tables, str(context.get("cachePath") or ""))
-        inferred_chart_spec = self._chart_spec_normalizer.infer(preview, dashboard_title)
+        chart_spec = self._chart_spec_normalizer.normalize(run.get("chartSpec"), preview, dashboard_title)
+        if chart_spec is None:
+            raise RuntimeError(
+                "The latest analytical run has no valid chart proposal. Ask Analitrics for a chart/dashboard first."
+            )
 
         with self._connection_factory.connect() as con:
             with con.transaction():
+                con.execute(
+                    """
+                    delete from analysis_dashboards
+                    where tenant_id = %s and user_id = %s and conversation_id = %s
+                    """,
+                    (tenant_id, user_id, conversation_id),
+                )
                 dashboard = con.execute(
                     """
                     insert into analysis_dashboards (
@@ -101,7 +112,7 @@ class DashboardRepository:
                         user_id,
                         conversation_id,
                         dashboard_title,
-                        "Dashboard creado desde un análisis del chat.",
+                        "Dashboard grafico creado desde un análisis del chat.",
                         seed_question,
                         sql,
                         run.get("messageId"),
@@ -138,40 +149,16 @@ class DashboardRepository:
                         dashboard_id,
                         tenant_id,
                         user_id,
-                        "Resultado principal",
-                        "table",
+                        chart_spec["title"] or "Grafico principal",
+                        chart_spec["type"],
                         seed_question,
                         sql,
-                        self._json({}),
+                        self._json(chart_spec),
                         1,
                         now,
                         now,
                     ),
                 )
-                if inferred_chart_spec:
-                    con.execute(
-                        """
-                        insert into analysis_dashboard_views (
-                            view_id, dashboard_id, tenant_id, user_id, title, view_type,
-                            question, sql, chart_spec, position, created_at, updated_at
-                        )
-                        values (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
-                        """,
-                        (
-                            f"view_{uuid4().hex}",
-                            dashboard_id,
-                            tenant_id,
-                            user_id,
-                            "Grafico recomendado",
-                            inferred_chart_spec["type"],
-                            seed_question,
-                            sql,
-                            self._json(inferred_chart_spec),
-                            2,
-                            now,
-                            now,
-                        ),
-                    )
         return self.get_dashboard(tenant_id, user_id, str(dashboard["dashboard_id"]))
 
     def get_dashboard(self, tenant_id: str, user_id: str, dashboard_id: str) -> dict[str, Any]:

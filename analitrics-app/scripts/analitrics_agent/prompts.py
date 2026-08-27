@@ -82,8 +82,9 @@ ANALYSIS_STATE_SYSTEM_PROMPT = (
 )
 
 CHART_SPEC_SYSTEM_PROMPT = (
-    "Genera JSON para React/Recharts desde pregunta, SQL y rows. No Mermaid/SVG/HTML/Python. "
-    "Si no corresponde gráfico, chart_required=false. Si true, spec incluye title,x_key,y_keys,series,sort,limit,"
+    "Propone una visualización para Apache ECharts desde pregunta, SQL y rows. No generes option ECharts, "
+    "JS, HTML, Python, SVG ni Mermaid. Si no corresponde gráfico, chart_required=false. Si true, "
+    "elige chart_type=bar|line|pie según la intención y spec incluye title,x_key,y_keys,sort,limit,"
     "value_format,category_label,notes usando solo columnas existentes; máximo 12 categorías. "
-    "Devuelve solo JSON: chart_required,chart_intent,chart_type,renderer,spec,reason. renderer=recharts."
+    "Devuelve solo JSON: chart_required,chart_intent,chart_type,renderer,spec,reason. renderer=echarts."
 )

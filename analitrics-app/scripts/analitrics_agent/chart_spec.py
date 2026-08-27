@@ -8,7 +8,7 @@ from .llm_client import JsonLlmClient
 from .prompts import CHART_SPEC_SYSTEM_PROMPT
 
 
-VALID_CHART_TYPES = {"bar", "line", "area", "pie", "scatter", "table"}
+VALID_CHART_TYPES = {"bar", "line", "pie"}
 
 
 class ChartSpecGenerator:
@@ -61,7 +61,7 @@ class ChartSpecGenerator:
                 "chart_required": False,
                 "chart_intent": chart_intent,
                 "chart_type": chart_type,
-                "renderer": "recharts",
+                "renderer": "echarts",
                 "spec": None,
                 "reason": "No hay filas para graficar.",
             }
@@ -80,7 +80,7 @@ class ChartSpecGenerator:
             "chart_required": chart_required,
             "chart_intent": chart_intent,
             "chart_type": chart_type,
-            "renderer": "recharts",
+            "renderer": "echarts",
             "spec": {
                 "title": str(spec.get("title") or result.get("title") or ""),
                 "x_key": x_key,
