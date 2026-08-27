@@ -9,6 +9,7 @@ import {
   useRunAnalitricsDashboardView,
 } from '~/hooks';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
+import AnalitricsEChart from './AnalitricsEChart';
 import { cn } from '~/utils';
 
 const numberFormat = new Intl.NumberFormat('es-PE');
@@ -265,6 +266,8 @@ export default function AnalitricsDashboardsPage() {
                     <div className="rounded-lg border border-status-error-border bg-surface-secondary p-3 text-sm text-text-primary">
                       No se pudo ejecutar la vista.
                     </div>
+                  ) : selectedView?.chartSpec?.renderer === 'echarts' && selectedView.viewType !== 'table' ? (
+                    <AnalitricsEChart spec={selectedView.chartSpec} rows={runQuery.data?.rows ?? []} />
                   ) : (
                     <ResultTable columns={runQuery.data?.columns ?? []} rows={runQuery.data?.rows ?? []} />
                   )}

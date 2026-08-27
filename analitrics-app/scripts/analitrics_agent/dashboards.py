@@ -10,6 +10,7 @@ import duckdb
 
 from .config import env
 from .control_plane import CatalogRepository, PostgresControlPlaneFactory
+from .chart_contract import AnalitricsChartSpecNormalizer
 from .repositories import AgentRunRepository
 from .sql_validation import SqlReadOnlyValidator
 
@@ -25,11 +26,13 @@ class DashboardRepository:
         catalog_repository: CatalogRepository,
         run_repository: AgentRunRepository,
         sql_validator: SqlReadOnlyValidator | None = None,
+        chart_spec_normalizer: AnalitricsChartSpecNormalizer | None = None,
     ) -> None:
         self._connection_factory = connection_factory
         self._catalog_repository = catalog_repository
         self._run_repository = run_repository
         self._sql_validator = sql_validator or SqlReadOnlyValidator()
+        self._chart_spec_normalizer = chart_spec_normalizer or AnalitricsChartSpecNormalizer()
 
     def list_dashboards(self, tenant_id: str, user_id: str) -> list[dict[str, Any]]:
         with self._connection_factory.connect() as con:
@@ -74,6 +77,9 @@ class DashboardRepository:
         seed_question = str(run.get("question") or "")
         source_file_ids = [str(item) for item in (run.get("fileIds") or []) if item]
         dashboard_title = (title or self._title_from_question(seed_question)).strip()
+
+        preview = self._execute_seed_preview(sql, known_tables, str(context.get("cachePath") or ""))
+        inferred_chart_spec = self._chart_spec_normalizer.infer(preview, dashboard_title)
 
         with self._connection_factory.connect() as con:
             with con.transaction():
@@ -142,6 +148,30 @@ class DashboardRepository:
                         now,
                     ),
                 )
+                if inferred_chart_spec:
+                    con.execute(
+                        """
+                        insert into analysis_dashboard_views (
+                            view_id, dashboard_id, tenant_id, user_id, title, view_type,
+                            question, sql, chart_spec, position, created_at, updated_at
+                        )
+                        values (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+                        """,
+                        (
+                            f"view_{uuid4().hex}",
+                            dashboard_id,
+                            tenant_id,
+                            user_id,
+                            "Grafico recomendado",
+                            inferred_chart_spec["type"],
+                            seed_question,
+                            sql,
+                            self._json(inferred_chart_spec),
+                            2,
+                            now,
+                            now,
+                        ),
+                    )
         return self.get_dashboard(tenant_id, user_id, str(dashboard["dashboard_id"]))
 
     def get_dashboard(self, tenant_id: str, user_id: str, dashboard_id: str) -> dict[str, Any]:
@@ -202,6 +232,19 @@ class DashboardRepository:
         finally:
             con.close()
         return {"columns": columns, "rows": rows, "rowCount": len(rows), "limit": safe_limit}
+
+    def _execute_seed_preview(self, sql: str, known_tables: list[str], cache_path_value: str) -> list[dict[str, Any]]:
+        self._sql_validator.validate(sql, known_tables)
+        cache_path = self._validated_cache_path(cache_path_value)
+        if not cache_path.exists():
+            return []
+        con = duckdb.connect(database=str(cache_path), read_only=True)
+        try:
+            cursor = con.execute(f"select * from ({sql.rstrip(';')}) as analitrics_dashboard_seed limit ?", [50])
+            columns = [column[0] for column in cursor.description or []]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        finally:
+            con.close()
 
     def _validated_cache_path(self, value: str) -> Path:
         base = Path(env("ANALITRICS_CACHE_DIR", "/var/analitrics/analytics/cache")).expanduser().resolve()
