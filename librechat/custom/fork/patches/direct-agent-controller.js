@@ -273,7 +273,7 @@ function mapAnalitricsProgress(message) {
   return value.slice(0, 177).trimEnd() + '...';
 }
 
-async function runAnalitricsDirectController(req, res) {
+async function runAnalitricsDirectController(req, res, initializeClient, addTitle) {
   const { endpointOption, conversationId: reqConversationId, parentMessageId = null } = req.body;
   const text = typeof req.body.text === 'string' ? req.body.text : '';
   const userId = String(req.user.id);
@@ -419,6 +419,66 @@ async function runAnalitricsDirectController(req, res) {
     },
     sender,
   });
+
+  let resolveConvoReady;
+  const convoReady = new Promise((resolve) => {
+    resolveConvoReady = resolve;
+  });
+  const titleEligible =
+    typeof addTitle === 'function' &&
+    typeof initializeClient === 'function' &&
+    parentMessageId === Constants.NO_PARENT &&
+    isNewConvo &&
+    !req.body?.isTemporary;
+  const emitTitleEvent = async ({ conversationId: titleConversationId, title }) => {
+    try {
+      await GenerationJobManager.emitChunk(streamId, {
+        event: 'title',
+        data: {
+          conversationId: titleConversationId,
+          title,
+        },
+      });
+    } catch (error) {
+      logger.error('[AnalitricsDirectController] Error emitting generated title', error);
+    }
+  };
+  if (titleEligible) {
+    (async () => {
+      let titleClient = null;
+      try {
+        const result = await initializeClient({
+          req,
+          res,
+          endpointOption,
+          signal: job.abortController.signal,
+          jobCreatedAt: job.createdAt,
+        });
+        titleClient = result?.client || null;
+        if (!titleClient) {
+          return;
+        }
+        await addTitle(req, {
+          text: text || getAttachmentTitleText(req.body.files),
+          conversationId,
+          client: titleClient,
+          immediate: true,
+          convoReady,
+          signal: job.abortController.signal,
+          onTitleGenerated: emitTitleEvent,
+        });
+      } catch (error) {
+        logger.warn('[AnalitricsDirectController] Native title generation failed', {
+          conversationId,
+          error: error?.message ?? error,
+        });
+      } finally {
+        if (titleClient) {
+          disposeClient(titleClient);
+        }
+      }
+    })();
+  }
 
   res.json({ streamId, conversationId, status: 'started' });
 
@@ -704,6 +764,7 @@ async function runAnalitricsDirectController(req, res) {
       spec,
       title: req.body.title || text.slice(0, 80) || 'Analitrics',
     };
+    resolveConvoReady?.();
 
     if (messageStepStarted) {
       await GenerationJobManager.emitChunk(streamId, {
@@ -731,6 +792,7 @@ async function runAnalitricsDirectController(req, res) {
     await GenerationJobManager.completeJob(streamId);
     await finishResumableRequest(req, userId);
   } catch (error) {
+    resolveConvoReady?.();
     logger.error('[AnalitricsDirectController] Generation error:', error);
     await GenerationJobManager.emitError(streamId, error.message || 'Analitrics generation failed');
     await GenerationJobManager.completeJob(streamId, error.message);
@@ -747,7 +809,7 @@ original = original.replace(helperAnchor, helper + helperAnchor);
 const controllerBefore = `module.exports = ResumableAgentController;`;
 const controllerAfter = `const AgentController = async (req, res, next, initializeClient, addTitle) => {
   if (process.env.ANALITRICS_DIRECT_AGENT === 'true') {
-    return runAnalitricsDirectController(req, res);
+    return runAnalitricsDirectController(req, res, initializeClient, addTitle);
   }
   return ResumableAgentController(req, res, next, initializeClient, addTitle);
 };

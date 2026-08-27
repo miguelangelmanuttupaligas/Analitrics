@@ -522,9 +522,9 @@ class AnalyticalAgentNodes:
             self._emit_progress("Sintetizando la respuesta con los resultados principales...")
             chart_intent = self._chart_intent(state)
             chart_instruction = (
-                "La respuesta tendrá un gráfico interactivo con los mismos datos. "
-                "No incluyas tablas markdown, rankings extensos ni listas fila por fila; el gráfico prevalece. "
-                "Redacta solo 1 o 2 frases con la lectura gerencial principal."
+                "El usuario pidió un gráfico, pero el chat no renderiza gráficos. "
+                "Responde con una tabla markdown clara basada en rows y una lectura ejecutiva breve. "
+                "Puedes mencionar que el gráfico puede construirse desde el dashboard si aplica."
                 if chart_intent
                 else "Si el usuario pide tabla o gráfico, usa una tabla markdown breve y una lectura ejecutiva."
             )
@@ -590,8 +590,8 @@ class AnalyticalAgentNodes:
                 return {**state, "critic": critic}
             self._emit_progress("Revisando consistencia entre pregunta, SQL y respuesta antes de cerrar.")
             chart_instruction = (
-                "Si habrá gráfico interactivo, no agregues tablas markdown, rankings extensos ni listas fila por fila. "
-                "Deja solo una lectura ejecutiva breve."
+                "Si el usuario pidió gráfico, valida que exista tabla textual o lista clara; "
+                "no exijas gráfico renderizado dentro del chat."
                 if chart_intent
                 else ""
             )

@@ -112,7 +112,7 @@ class DashboardRepository:
                         user_id,
                         conversation_id,
                         dashboard_title,
-                        "Dashboard grafico creado desde un análisis del chat.",
+                        "Dashboard gráfico de Analitrics.",
                         seed_question,
                         sql,
                         run.get("messageId"),

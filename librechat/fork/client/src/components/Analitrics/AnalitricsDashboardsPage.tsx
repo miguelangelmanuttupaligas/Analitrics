@@ -92,7 +92,7 @@ export default function AnalitricsDashboardsPage() {
             </div>
           ) : dashboards.length === 0 ? (
             <p className="px-2 py-4 text-sm text-text-secondary">
-              Aún no creaste dashboards desde un análisis.
+              Aún no creaste dashboards.
             </p>
           ) : (
             <div className="space-y-1">

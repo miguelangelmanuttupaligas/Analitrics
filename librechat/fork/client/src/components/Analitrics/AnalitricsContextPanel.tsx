@@ -863,11 +863,11 @@ export default function AnalitricsContextPanel({ conversationId }: AnalitricsCon
               onClick={handleCreateDashboard}
             >
               <LayoutDashboard className="size-4" aria-hidden="true" />
-              {createDashboard.isLoading ? 'Creando dashboard...' : 'Crear dashboard desde este análisis'}
+              {createDashboard.isLoading ? 'Creando dashboard...' : 'Crear dashboard'}
             </button>
             {createDashboard.isError && (
               <p className="text-xs text-status-error">
-                No se pudo crear el dashboard desde el último análisis.
+                No se pudo crear el dashboard.
               </p>
             )}
 
