@@ -79,6 +79,27 @@ async function getAnalitricsMemoryContext(req, userId) {
   }
 }
 
+async function findExistingAnalitricsUserMessage(userId, messageId) {
+  if (!messageId) {
+    return null;
+  }
+  try {
+    const [message] = await getMessages(
+      { user: userId, messageId, isCreatedByUser: true },
+      '-_id -__v -user',
+      { limit: 1, sort: { createdAt: 1 } },
+    );
+    return message || null;
+  } catch (error) {
+    logger.warn('[AnalitricsDirectController] Failed to check existing user message', {
+      userId,
+      messageId,
+      error: error?.message ?? error,
+    });
+    return null;
+  }
+}
+
 function buildAnalitricsToolContent(payload, answer) {
   const files = Array.isArray(payload?.files) ? payload.files : [];
   const tables = Array.isArray(payload?.tables) ? payload.tables : [];
@@ -256,12 +277,14 @@ async function runAnalitricsDirectController(req, res) {
   const { endpointOption, conversationId: reqConversationId, parentMessageId = null } = req.body;
   const text = typeof req.body.text === 'string' ? req.body.text : '';
   const userId = String(req.user.id);
+  const userMessageId = req.body.messageId || crypto.randomUUID();
+  const existingUserMessage = await findExistingAnalitricsUserMessage(userId, userMessageId);
   const agentId = process.env.ANALITRICS_AGENT_ID || 'agent_analitrics';
   const spec = process.env.ANALITRICS_MODEL_SPEC || 'analitrics';
-  const isNewConvo = !reqConversationId || reqConversationId === 'new';
-  const conversationId = isNewConvo ? crypto.randomUUID() : reqConversationId;
+  const effectiveRequestConversationId = existingUserMessage?.conversationId || reqConversationId;
+  const isNewConvo = !effectiveRequestConversationId || effectiveRequestConversationId === 'new';
+  const conversationId = isNewConvo ? crypto.randomUUID() : effectiveRequestConversationId;
   const streamId = conversationId;
-  const userMessageId = req.body.messageId || crypto.randomUUID();
   const responseMessageId = req.body.responseMessageId || \`\${String(userMessageId).replace(/_+$/, '')}_\`;
   const endpoint = endpointOption?.endpoint || 'agents';
   const model = process.env.ANALITRICS_MODEL || 'analitrics-agent';
@@ -287,7 +310,7 @@ async function runAnalitricsDirectController(req, res) {
   if (
     await isUnpersistedPreliminaryParent({
       userId,
-      conversationId: reqConversationId,
+      conversationId: effectiveRequestConversationId,
       parentMessageId,
       getMessages,
     })
@@ -363,6 +386,20 @@ async function runAnalitricsDirectController(req, res) {
     spec,
     ...(files.length > 0 && { files }),
   };
+  const [existingResponseMessage] = existingUserMessage
+    ? await getMessages(
+        { user: userId, messageId: responseMessageId, isCreatedByUser: false },
+        '-_id -__v -user',
+        { limit: 1, sort: { createdAt: 1 } },
+      ).catch((error) => {
+        logger.warn('[AnalitricsDirectController] Failed to check existing response message', {
+          userId,
+          responseMessageId,
+          error: error?.message ?? error,
+        });
+        return [];
+      })
+    : [];
 
   const job = await GenerationJobManager.createJob(streamId, userId, conversationId);
   req._resumableStreamId = streamId;
@@ -487,6 +524,48 @@ async function runAnalitricsDirectController(req, res) {
     });
   };
 
+  if (existingUserMessage && existingResponseMessage) {
+    const conversation =
+      (await getConvo(userId, conversationId).catch(() => null)) || {
+        conversationId,
+        endpoint,
+        model,
+        spec,
+        title: req.body.title || text.slice(0, 80) || 'Analitrics',
+      };
+    await GenerationJobManager.emitChunk(streamId, {
+      created: true,
+      message: existingUserMessage,
+      streamId,
+    });
+    await emitTextBlock(existingResponseMessage.text || '');
+    if (messageStepStarted) {
+      await GenerationJobManager.emitChunk(streamId, {
+        event: 'on_run_step_closed',
+        data: {
+          id: messageStepId,
+          index: 0,
+          stepIndex: 0,
+          type: 'message_creation',
+          status: 'completed',
+          runId: responseMessageId,
+          agentId,
+          closed_at: Date.now(),
+        },
+      });
+    }
+    await GenerationJobManager.emitDone(streamId, {
+      final: true,
+      conversation,
+      title: conversation.title,
+      requestMessage: sanitizeMessageForTransmit(existingUserMessage),
+      responseMessage: existingResponseMessage,
+    });
+    GenerationJobManager.completeJob(streamId);
+    await finishResumableRequest(req, userId);
+    return;
+  }
+
   try {
     await GenerationJobManager.emitChunk(streamId, {
       created: true,
@@ -494,9 +573,11 @@ async function runAnalitricsDirectController(req, res) {
       streamId,
     });
 
-    await saveMessage(reqCtx, userMessage, {
-      context: 'api/server/controllers/agents/request.js - analitrics direct user message',
-    });
+    if (!existingUserMessage) {
+      await saveMessage(reqCtx, userMessage, {
+        context: 'api/server/controllers/agents/request.js - analitrics direct user message',
+      });
+    }
 
     const runId = crypto.randomUUID();
     const response = await fetch(agentOrigin + '/agent/run/stream', {
