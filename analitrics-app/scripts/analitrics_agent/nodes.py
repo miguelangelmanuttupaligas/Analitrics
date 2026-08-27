@@ -12,6 +12,7 @@ from .analysis_state import AnalysisStateBuilder
 from .analytical_context import AnalyticalContextBuilder
 from .catalog_feedback import CatalogFeedbackApplier
 from .chart_spec import ChartSpecGenerator
+from .config import env
 from .conversation_planner import ConversationPlanner, find_selected_analysis_state
 from .duckdb_workspace import DuckDbTableCatalog, DuckDbWorkspace, DuckDbWorkspaceFactory, ProfileEnricher
 from .control_plane import CatalogRepository
