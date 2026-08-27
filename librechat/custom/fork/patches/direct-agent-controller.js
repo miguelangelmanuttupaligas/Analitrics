@@ -561,7 +561,7 @@ async function runAnalitricsDirectController(req, res) {
       requestMessage: sanitizeMessageForTransmit(existingUserMessage),
       responseMessage: existingResponseMessage,
     });
-    GenerationJobManager.completeJob(streamId);
+    await GenerationJobManager.completeJob(streamId);
     await finishResumableRequest(req, userId);
     return;
   }
@@ -728,12 +728,12 @@ async function runAnalitricsDirectController(req, res) {
       requestMessage: sanitizeMessageForTransmit(userMessage),
       responseMessage,
     });
-    GenerationJobManager.completeJob(streamId);
+    await GenerationJobManager.completeJob(streamId);
     await finishResumableRequest(req, userId);
   } catch (error) {
     logger.error('[AnalitricsDirectController] Generation error:', error);
     await GenerationJobManager.emitError(streamId, error.message || 'Analitrics generation failed');
-    GenerationJobManager.completeJob(streamId, error.message);
+    await GenerationJobManager.completeJob(streamId, error.message);
     await finishResumableRequest(req, userId);
   }
 }
