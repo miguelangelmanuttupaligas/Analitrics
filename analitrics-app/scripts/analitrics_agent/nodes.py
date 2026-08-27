@@ -173,12 +173,23 @@ class AnalyticalAgentNodes:
                 analytical_context,
                 conversation_plan.get("selected_analysis_state_id"),
             )
+            feedback_proposals = conversation_plan.get("catalog_feedback_candidates") or []
+            if not isinstance(feedback_proposals, list):
+                feedback_proposals = []
             feedback_proposal = conversation_plan.get("catalog_feedback_candidate")
-            applied_feedback = self._catalog_feedback_applier.apply_if_confirmed(self._request, feedback_proposal)
-            if applied_feedback:
-                self._emit_progress("Registré una definición de negocio explícita en el catálogo.")
+            if isinstance(feedback_proposal, dict) and feedback_proposal not in feedback_proposals:
+                feedback_proposals = [feedback_proposal, *feedback_proposals]
+            applied_feedbacks = self._catalog_feedback_applier.apply_many_if_confirmed(self._request, feedback_proposals)
+            applied_feedback = applied_feedbacks[0] if applied_feedbacks else None
+            if applied_feedbacks:
+                count_label = "una definición" if len(applied_feedbacks) == 1 else f"{len(applied_feedbacks)} definiciones"
+                self._emit_progress(f"Registré {count_label} de negocio explícita(s) en el catálogo.")
                 feedback_proposal = applied_feedback
-                conversation_plan = {**conversation_plan, "catalog_feedback_candidate": applied_feedback}
+                conversation_plan = {
+                    **conversation_plan,
+                    "catalog_feedback_candidate": applied_feedback,
+                    "catalog_feedback_candidates": applied_feedbacks,
+                }
                 catalog_feedback = self._catalog_repository.find_feedback_for_request(
                     self._request,
                     [metadata.file_id for metadata in files],
@@ -191,7 +202,9 @@ class AnalyticalAgentNodes:
                 "chart_intent": bool(conversation_plan.get("chart_request")),
                 "selected_analysis_state": selected_state,
                 "feedback_proposal": feedback_proposal,
+                "feedback_proposals": feedback_proposals,
                 "applied_feedback": applied_feedback,
+                "applied_feedbacks": applied_feedbacks,
             }
             effective_question = str(analytical_context.get("effective_question") or self._request.question)
             literal_metadata = self._literal_metadata_response(conversation_plan, profiles, workspace)
@@ -311,7 +324,7 @@ class AnalyticalAgentNodes:
                     "sql": "",
                     "chart_spec": {"chart_required": False, "chart_intent": False, "renderer": "echarts", "spec": None},
                 }
-            if conversation_plan.get("needs_clarification") and not analytical_context.get("feedback_proposal"):
+            if conversation_plan.get("needs_clarification"):
                 self._emit_progress("La pregunta admite más de una lectura; pediré una aclaración antes de consultar.")
                 pending = {
                     "pending": True,
@@ -341,7 +354,7 @@ class AnalyticalAgentNodes:
                     },
                     "in_scope": False,
                     "scope_reason": "clarification_required",
-                    "answer": answer,
+                    "answer": self._prepend_applied_feedback_note(answer, analytical_context),
                 }
             if analytical_context.get("pending_clarification"):
                 self._catalog_repository.clear_pending_clarification(self._request)
@@ -1112,7 +1125,41 @@ class AnalyticalAgentNodes:
         )
         return answer.rstrip() + note
 
+    def _prepend_applied_feedback_note(self, answer: str, analytical_context: dict[str, Any]) -> str:
+        applied = analytical_context.get("applied_feedbacks")
+        if not isinstance(applied, list) or not applied:
+            applied_one = analytical_context.get("applied_feedback")
+            applied = [applied_one] if isinstance(applied_one, dict) else []
+        applied_contents = [str(item.get("content") or "").strip() for item in applied if isinstance(item, dict)]
+        applied_contents = [content for content in applied_contents if content]
+        if not applied_contents:
+            return answer
+        if len(applied_contents) == 1:
+            note = "Registré esta definición en el catálogo: " + applied_contents[0]
+        else:
+            note = "Registré estas definiciones en el catálogo: " + "; ".join(applied_contents[:4])
+        return note + "\n\n" + answer.lstrip()
+
     def _direct_plan_answer(self, conversation_plan: dict[str, Any]) -> str:
+        feedbacks = [
+            item
+            for item in (conversation_plan.get("catalog_feedback_candidates") or [])
+            if isinstance(item, dict) and item.get("content")
+        ]
+        if feedbacks:
+            if all(item.get("applied") for item in feedbacks):
+                contents = "\n".join(f"- {item.get('content')}" for item in feedbacks[:6])
+                return (
+                    "Registré estas definiciones de negocio en el catálogo:\n\n"
+                    f"{contents}\n\n"
+                    "Puedes revisarlas o editarlas desde el panel derecho."
+                )
+            contents = "\n".join(f"- {item.get('content')}" for item in feedbacks[:6])
+            return (
+                "Detecté correcciones o definiciones de negocio para enriquecer el catálogo:\n\n"
+                f"{contents}\n\n"
+                "Puedes confirmarlas desde el panel derecho para que afecten futuras consultas."
+            )
         feedback = conversation_plan.get("catalog_feedback_candidate")
         if isinstance(feedback, dict) and feedback.get("content"):
             if feedback.get("applied"):

@@ -60,6 +60,19 @@ class ConversationPlanner:
         feedback_candidate = raw.get("catalog_feedback_candidate")
         if not isinstance(feedback_candidate, dict):
             feedback_candidate = None
+        feedback_candidates = raw.get("catalog_feedback_candidates")
+        if not isinstance(feedback_candidates, list):
+            feedback_candidates = []
+        normalized_feedback_candidates = [
+            normalized
+            for item in feedback_candidates
+            if isinstance(item, dict)
+            for normalized in [self._normalize_feedback(item, analytical_context)]
+            if normalized is not None
+        ]
+        normalized_feedback_candidate = self._normalize_feedback(feedback_candidate, analytical_context)
+        if normalized_feedback_candidate and not normalized_feedback_candidates:
+            normalized_feedback_candidates = [normalized_feedback_candidate]
         requires_sql = raw.get("requires_sql")
         if requires_sql is None:
             requires_sql = not (request_kind == "correction" and feedback_candidate and not bool(raw.get("chart_request")))
@@ -79,7 +92,8 @@ class ConversationPlanner:
             "clarification_question": clarification_question,
             "chart_request": bool(raw.get("chart_request")),
             "chart_type": chart_type,
-            "catalog_feedback_candidate": self._normalize_feedback(feedback_candidate, analytical_context),
+            "catalog_feedback_candidate": normalized_feedback_candidate or (normalized_feedback_candidates[0] if normalized_feedback_candidates else None),
+            "catalog_feedback_candidates": normalized_feedback_candidates,
             "metadata_request": self._normalize_metadata_request(metadata_request),
             "reason": str(raw.get("reason") or ""),
             "planner": "llm",

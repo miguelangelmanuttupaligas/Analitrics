@@ -75,6 +75,8 @@ def state_output(request: AgentRequest, state: AgentState) -> dict[str, Any]:
         "analytical_context": state.get("analytical_context") or {},
         "analysis_state": state.get("analysis_state") or {},
         "feedback_proposal": (state.get("analytical_context") or {}).get("feedback_proposal"),
+        "feedback_proposals": (state.get("analytical_context") or {}).get("feedback_proposals") or [],
+        "applied_feedbacks": (state.get("analytical_context") or {}).get("applied_feedbacks") or [],
         "plan": state.get("plan"),
         "sql": state.get("sql"),
         "row_count": len(state.get("rows") or []),

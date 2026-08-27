@@ -21,6 +21,7 @@ CONVERSATION_PLANNER_SYSTEM_PROMPT = (
     "chart_request(boolean), "
     "chart_type(bar|line|area|pie|scatter|table|null), "
     "catalog_feedback_candidate(object|null), "
+    "catalog_feedback_candidates(array|null), "
     "metadata_request(object|null), "
     "reason(string). "
     "Reglas: confidence=low implica needs_clarification=true; confidence=medium no pide aclaración si hay una lectura razonable. "
@@ -31,11 +32,12 @@ CONVERSATION_PLANNER_SYSTEM_PROMPT = (
     "metadata_literal es solo para pedir estructura literal de archivos/tablas/columnas/filas/cache, no cálculos; "
     "usa requires_sql=false y metadata_request con kind(columns|catalog|tables|files|rows|cache), target_filename, target_table, reason. "
     "Si pending_clarification existe, trata la pregunta como posible respuesta. "
+    "Si resuelve solo parte de la aclaración, guarda esa parte en catalog_feedback_candidates y deja needs_clarification=true con la pregunta restante. "
     "Si el usuario da definición/regla/mapeo verificable con columnas existentes, crea catalog_feedback_candidate, "
     "needs_clarification=false, requires_user_confirmation=false y auto_apply=true. "
     "Si la corrección no es verificable, pide mapeo/aproximación; no inventes columnas. "
     "Si solo guarda una definición y no pide recalcular, requires_sql=false. "
-    "catalog_feedback_candidate incluye type, content, target, source_file_id, source_filename, confidence, "
+    "catalog_feedback_candidate/candidates incluye type, content, target, source_file_id, source_filename, confidence, "
     "requires_user_confirmation, auto_apply."
 )
 

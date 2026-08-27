@@ -26,6 +26,18 @@ class CatalogFeedbackApplier:
         self._catalog_repository = catalog_repository
 
     def apply_if_confirmed(self, request: AgentRequest, proposal: dict[str, Any] | None) -> dict[str, Any] | None:
+        applied = self.apply_many_if_confirmed(request, [proposal] if proposal else [])
+        return applied[0] if applied else None
+
+    def apply_many_if_confirmed(self, request: AgentRequest, proposals: list[dict[str, Any] | None]) -> list[dict[str, Any]]:
+        applied: list[dict[str, Any]] = []
+        for proposal in proposals:
+            saved = self._apply_one_if_confirmed(request, proposal)
+            if saved:
+                applied.append(saved)
+        return applied
+
+    def _apply_one_if_confirmed(self, request: AgentRequest, proposal: dict[str, Any] | None) -> dict[str, Any] | None:
         if not self._should_apply(proposal):
             return None
         assert proposal is not None
