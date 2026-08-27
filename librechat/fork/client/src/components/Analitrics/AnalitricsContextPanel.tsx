@@ -4,6 +4,7 @@ import {
   CalendarDays,
   CheckCircle2,
   FileSpreadsheet,
+  LayoutDashboard,
   PencilLine,
   RefreshCw,
   Sigma,
@@ -11,6 +12,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { Constants } from 'librechat-data-provider';
 import type {
   AnalitricsColumn,
@@ -19,7 +21,11 @@ import type {
   AnalitricsProfile,
   AnalitricsTable,
 } from '~/hooks';
-import { useAnalitricsContext, useSaveAnalitricsCatalogFeedback } from '~/hooks';
+import {
+  useAnalitricsContext,
+  useCreateAnalitricsDashboardFromAnalysis,
+  useSaveAnalitricsCatalogFeedback,
+} from '~/hooks';
 import { cn } from '~/utils';
 
 type AnalitricsContextPanelProps = {
@@ -739,8 +745,10 @@ function CatalogFeedbackCard({
 }
 
 export default function AnalitricsContextPanel({ conversationId }: AnalitricsContextPanelProps) {
+  const navigate = useNavigate();
   const hasConversation = Boolean(conversationId && conversationId !== Constants.NEW_CONVO);
   const { data, error, isFetching, refetch } = useAnalitricsContext(conversationId);
+  const createDashboard = useCreateAnalitricsDashboardFromAnalysis();
   const files = data?.files ?? [];
   const tables = (data?.tables ?? []).filter((table) => !table.systemTable);
   const profiles = (data?.profiles ?? []).filter((profile) => !profile.system_table);
@@ -771,6 +779,23 @@ export default function AnalitricsContextPanel({ conversationId }: AnalitricsCon
   const executiveSummary = buildExecutiveSummary(selectedDataset, sourceFeedback);
   const latestConcepts = latestFeedbackForSteps(sourceFeedback, [1])?.content || '';
   const latestDefinitions = latestFeedbackForSteps(sourceFeedback, [2, 4, 6])?.content || '';
+
+  const handleCreateDashboard = () => {
+    if (!conversationId || createDashboard.isLoading) {
+      return;
+    }
+    createDashboard.mutate(
+      { conversationId },
+      {
+        onSuccess: (payload) => {
+          const dashboardId = payload.dashboard?.dashboardId;
+          if (dashboardId) {
+            navigate(`/dashboards/${dashboardId}`);
+          }
+        },
+      },
+    );
+  };
 
   if (!hasConversation) {
     return null;
@@ -830,6 +855,21 @@ export default function AnalitricsContextPanel({ conversationId }: AnalitricsCon
             <InsightSection icon={FileSpreadsheet} title="Lectura ejecutiva">
               <p className="text-xs leading-relaxed">{executiveSummary}</p>
             </InsightSection>
+
+            <button
+              type="button"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-border-light bg-surface-secondary px-3 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!hasProfile || createDashboard.isLoading}
+              onClick={handleCreateDashboard}
+            >
+              <LayoutDashboard className="size-4" aria-hidden="true" />
+              {createDashboard.isLoading ? 'Creando dashboard...' : 'Crear dashboard desde este análisis'}
+            </button>
+            {createDashboard.isError && (
+              <p className="text-xs text-status-error">
+                No se pudo crear el dashboard desde el último análisis.
+              </p>
+            )}
 
             <div className="grid grid-cols-2 gap-2">
               {executiveKpis.map((kpi) => (

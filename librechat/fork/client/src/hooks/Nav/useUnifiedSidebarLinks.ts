@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
-import { BarChart3, MessagesSquare } from 'lucide-react';
+import { BarChart3, LayoutDashboard, MessagesSquare } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useUserKeyQuery } from 'librechat-data-provider/react-query';
 import { getConfigDefaults, getEndpointField, SystemRoles } from 'librechat-data-provider';
@@ -67,9 +67,20 @@ export default function useUnifiedSidebarLinks() {
       id: 'conversations',
       Component: ConversationsSection,
     };
+    const dashboardsLink: NavLink = {
+      title: 'Dashboards' as never,
+      label: '',
+      icon: LayoutDashboard,
+      id: 'dashboards',
+      onClick: () => {
+        if (!location.pathname.startsWith('/dashboards')) {
+          navigate('/dashboards');
+        }
+      },
+    };
 
     if (!insightsFeatureEnabled || insightsAccess?.access !== true) {
-      return [conversationLink, ...sideNavLinks];
+      return [conversationLink, dashboardsLink, ...sideNavLinks];
     }
 
     const insightsLink: NavLink = {
@@ -87,7 +98,7 @@ export default function useUnifiedSidebarLinks() {
     const nextLinks = [...sideNavLinks];
     nextLinks.splice(mcpIndex >= 0 ? mcpIndex + 1 : nextLinks.length, 0, insightsLink);
 
-    return [conversationLink, ...nextLinks];
+    return [conversationLink, dashboardsLink, ...nextLinks];
   }, [insightsAccess?.access, insightsFeatureEnabled, location.pathname, navigate, sideNavLinks]);
 
   return links;

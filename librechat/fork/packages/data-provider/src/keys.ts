@@ -76,6 +76,8 @@ export enum QueryKeys {
   activeJobs = 'activeJobs',
   /* Analitrics */
   analitricsContext = 'analitricsContext',
+  analitricsDashboards = 'analitricsDashboards',
+  analitricsDashboard = 'analitricsDashboard',
   /* Agent API Keys */
   agentApiKeys = 'agentApiKeys',
   /* Skills */

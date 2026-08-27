@@ -1,4 +1,10 @@
 export { default as useAnalitricsContext, useSaveAnalitricsCatalogFeedback } from './useAnalitricsContext';
+export {
+  useAnalitricsDashboard,
+  useAnalitricsDashboards,
+  useCreateAnalitricsDashboardFromAnalysis,
+  useRunAnalitricsDashboardView,
+} from './useAnalitricsDashboards';
 export type {
   AnalitricsColumn,
   AnalitricsContext,
@@ -8,3 +14,9 @@ export type {
   AnalitricsProfile,
   AnalitricsTable,
 } from './useAnalitricsContext';
+export type {
+  AnalitricsDashboard,
+  AnalitricsDashboardRun,
+  AnalitricsDashboardSummary,
+  AnalitricsDashboardView,
+} from './useAnalitricsDashboards';

@@ -11,8 +11,14 @@ from uuid import uuid4
 
 from analitrics_agent import AgentRequest, AnalyticalAgentFactory
 from analitrics_agent.config import bool_env
+from analitrics_agent.dashboards import DashboardRepositoryFactory
 from analitrics_agent.ingest_validation import IngestValidationFactory
 from analitrics_agent.models import state_output
+from analitrics_agent.repositories import AgentRunRepository, MongoDatabaseFactory
+
+
+_database_factory = MongoDatabaseFactory()
+_run_repository = AgentRunRepository(_database_factory)
 
 
 def start_reconciliation_worker() -> None:
@@ -46,6 +52,12 @@ class AgentHttpHandler(BaseHTTPRequestHandler):
         if parsed.path == "/agent/context":
             self._handle_context(parsed.query)
             return
+        if parsed.path == "/agent/dashboards":
+            self._handle_dashboard_list(parsed.query)
+            return
+        if parsed.path.startswith("/agent/dashboards/"):
+            self._handle_dashboard_get(parsed.path, parsed.query)
+            return
         self._send_json(404, {"error": "Not found"})
 
     def do_POST(self) -> None:
@@ -67,6 +79,14 @@ class AgentHttpHandler(BaseHTTPRequestHandler):
 
         if self.path == "/agent/catalog/feedback":
             self._handle_catalog_feedback()
+            return
+
+        if self.path == "/agent/dashboards/from-analysis":
+            self._handle_dashboard_create()
+            return
+
+        if self.path.startswith("/agent/dashboards/") and self.path.endswith("/run"):
+            self._handle_dashboard_view_run()
             return
 
         if self.path != "/agent/run":
@@ -163,6 +183,83 @@ class AgentHttpHandler(BaseHTTPRequestHandler):
                 tenant_id=tenant_id,
                 user_id=user_id,
                 conversation_id=conversation_id,
+            )
+            self._send_json(200, {"ok": True, **result})
+        except Exception as exc:
+            if bool_env("ANALITRICS_DEBUG_ERRORS", False):
+                raise
+            self._send_json(422, {"ok": False, "error": str(exc)})
+
+    def _handle_dashboard_list(self, query: str) -> None:
+        try:
+            tenant_id, user_id, _ = self._identity_from_query(query, require_conversation=False)
+            dashboards = DashboardRepositoryFactory.get_repository(_run_repository).list_dashboards(tenant_id, user_id)
+            self._send_json(200, {"ok": True, "dashboards": dashboards})
+        except Exception as exc:
+            if bool_env("ANALITRICS_DEBUG_ERRORS", False):
+                raise
+            self._send_json(422, {"ok": False, "error": str(exc)})
+
+    def _handle_dashboard_get(self, path: str, query: str) -> None:
+        try:
+            dashboard_id = self._path_part(path, 2)
+            tenant_id, user_id, _ = self._identity_from_query(query, require_conversation=False)
+            dashboard = DashboardRepositoryFactory.get_repository(_run_repository).get_dashboard(
+                tenant_id,
+                user_id,
+                dashboard_id,
+            )
+            self._send_json(200, {"ok": True, "dashboard": dashboard})
+        except Exception as exc:
+            if bool_env("ANALITRICS_DEBUG_ERRORS", False):
+                raise
+            self._send_json(422, {"ok": False, "error": str(exc)})
+
+    def _handle_dashboard_create(self) -> None:
+        try:
+            payload = self._read_json()
+            tenant_id = str(payload.get("tenantId") or payload.get("tenant_id") or "analitrics")
+            user_id = self._required_str(payload.get("userId") or payload.get("user_id"), "userId")
+            conversation_id = self._required_str(
+                payload.get("conversationId") or payload.get("conversation_id"),
+                "conversationId",
+            )
+            title = self._optional_str(payload.get("title"))
+            dashboard = DashboardRepositoryFactory.get_repository(_run_repository).create_from_latest_analysis(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                title=title,
+            )
+            self._send_json(200, {"ok": True, "dashboard": dashboard})
+        except Exception as exc:
+            if bool_env("ANALITRICS_DEBUG_ERRORS", False):
+                raise
+            self._send_json(422, {"ok": False, "error": str(exc)})
+
+    def _handle_dashboard_view_run(self) -> None:
+        try:
+            payload = self._read_json()
+            parts = urlparse(self.path).path.strip("/").split("/")
+            if (
+                len(parts) != 6
+                or parts[0] != "agent"
+                or parts[1] != "dashboards"
+                or parts[3] != "views"
+                or parts[5] != "run"
+            ):
+                raise RuntimeError("Invalid dashboard view path")
+            dashboard_id = parts[2]
+            view_id = parts[4]
+            tenant_id = str(payload.get("tenantId") or payload.get("tenant_id") or "analitrics")
+            user_id = self._required_str(payload.get("userId") or payload.get("user_id"), "userId")
+            limit = int(payload.get("limit") or 200)
+            result = DashboardRepositoryFactory.get_repository(_run_repository).run_view(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                dashboard_id=dashboard_id,
+                view_id=view_id,
+                limit=limit,
             )
             self._send_json(200, {"ok": True, **result})
         except Exception as exc:
@@ -276,6 +373,33 @@ class AgentHttpHandler(BaseHTTPRequestHandler):
             return None
         text = str(value).strip()
         return text or None
+
+    def _required_str(self, value: Any, name: str) -> str:
+        text = self._optional_str(value)
+        if not text:
+            raise RuntimeError(f"{name} is required")
+        return text
+
+    def _identity_from_query(self, query: str, require_conversation: bool = True) -> tuple[str, str, str | None]:
+        values = parse_qs(query)
+        tenant_id = str((values.get("tenantId") or values.get("tenant_id") or ["analitrics"])[0])
+        user_id = (values.get("userId") or values.get("user_id") or [""])[0]
+        conversation_id = (values.get("conversationId") or values.get("conversation_id") or [""])[0]
+        if not user_id:
+            raise RuntimeError("userId is required")
+        if require_conversation and not conversation_id:
+            raise RuntimeError("conversationId is required")
+        return tenant_id, user_id, conversation_id or None
+
+    def _path_part(self, path: str, index: int) -> str:
+        parts = path.strip("/").split("/")
+        try:
+            value = parts[index]
+        except IndexError as exc:
+            raise RuntimeError("Invalid path") from exc
+        if not value:
+            raise RuntimeError("Invalid path")
+        return value
 
     def _messages_or_none(self, value: Any) -> list[dict[str, Any]] | None:
         if not isinstance(value, list):

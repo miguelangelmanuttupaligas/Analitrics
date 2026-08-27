@@ -551,3 +551,14 @@ export const analitricsContext = (conversationId: string) =>
   `${BASE_URL}/api/analitrics/context?conversationId=${encodeURIComponent(conversationId)}`;
 
 export const analitricsCatalogFeedback = () => `${BASE_URL}/api/analitrics/catalog/feedback`;
+
+export const analitricsDashboards = () => `${BASE_URL}/api/analitrics/dashboards`;
+
+export const analitricsDashboard = (dashboardId: string) =>
+  `${BASE_URL}/api/analitrics/dashboards/${encodeURIComponent(dashboardId)}`;
+
+export const analitricsDashboardFromAnalysis = () =>
+  `${BASE_URL}/api/analitrics/dashboards/from-analysis`;
+
+export const analitricsDashboardViewRun = (dashboardId: string, viewId: string) =>
+  `${BASE_URL}/api/analitrics/dashboards/${encodeURIComponent(dashboardId)}/views/${encodeURIComponent(viewId)}/run`;

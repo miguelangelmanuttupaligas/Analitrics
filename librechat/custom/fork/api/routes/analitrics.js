@@ -108,6 +108,102 @@ router.get('/context', async (req, res) => {
   }
 });
 
+const analitricsIdentity = (req) => ({
+  tenantId: String(req.user?.tenantId || req.headers['x-tenant-id'] || 'analitrics'),
+  userId: String(req.user.id),
+});
+
+router.get('/dashboards', async (req, res) => {
+  const { tenantId, userId } = analitricsIdentity(req);
+  const agentOrigin = process.env.ANALITRICS_AGENT_ORIGIN || 'http://analytics-agent:8090';
+  const params = new URLSearchParams({ tenantId, userId });
+
+  try {
+    const response = await fetch(agentOrigin + '/agent/dashboards?' + params.toString());
+    const payload = await response.json().catch(() => ({}));
+    return res.status(response.status).json(payload);
+  } catch (error) {
+    logger.warn('[AnalitricsDashboards] Agent unavailable: ' + error.message);
+    return res.status(502).json({ ok: false, error: 'Analitrics dashboards unavailable' });
+  }
+});
+
+router.get('/dashboards/:dashboardId', async (req, res) => {
+  const dashboardId = String(req.params.dashboardId || '');
+  if (!dashboardId) {
+    return res.status(400).json({ ok: false, error: 'dashboardId is required' });
+  }
+  const { tenantId, userId } = analitricsIdentity(req);
+  const agentOrigin = process.env.ANALITRICS_AGENT_ORIGIN || 'http://analytics-agent:8090';
+  const params = new URLSearchParams({ tenantId, userId });
+
+  try {
+    const response = await fetch(
+      agentOrigin + '/agent/dashboards/' + encodeURIComponent(dashboardId) + '?' + params.toString(),
+    );
+    const payload = await response.json().catch(() => ({}));
+    return res.status(response.status).json(payload);
+  } catch (error) {
+    logger.warn('[AnalitricsDashboard] Agent unavailable: ' + error.message);
+    return res.status(502).json({ ok: false, error: 'Analitrics dashboard unavailable' });
+  }
+});
+
+router.post('/dashboards/from-analysis', async (req, res) => {
+  const conversationId = String(req.body?.conversationId || '');
+  const title = req.body?.title ? String(req.body.title) : undefined;
+  if (!conversationId) {
+    return res.status(400).json({ ok: false, error: 'conversationId is required' });
+  }
+  const { tenantId, userId } = analitricsIdentity(req);
+  const agentOrigin = process.env.ANALITRICS_AGENT_ORIGIN || 'http://analytics-agent:8090';
+
+  try {
+    const response = await fetch(agentOrigin + '/agent/dashboards/from-analysis', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tenantId, userId, conversationId, title }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    return res.status(response.status).json(payload);
+  } catch (error) {
+    logger.warn('[AnalitricsDashboardCreate] Agent unavailable: ' + error.message);
+    return res.status(502).json({ ok: false, error: 'Analitrics dashboard creation unavailable' });
+  }
+});
+
+router.post('/dashboards/:dashboardId/views/:viewId/run', async (req, res) => {
+  const dashboardId = String(req.params.dashboardId || '');
+  const viewId = String(req.params.viewId || '');
+  if (!dashboardId || !viewId) {
+    return res.status(400).json({ ok: false, error: 'dashboardId and viewId are required' });
+  }
+  const { tenantId, userId } = analitricsIdentity(req);
+  const limit = Number(req.body?.limit || 200);
+  const agentOrigin = process.env.ANALITRICS_AGENT_ORIGIN || 'http://analytics-agent:8090';
+
+  try {
+    const response = await fetch(
+      agentOrigin +
+        '/agent/dashboards/' +
+        encodeURIComponent(dashboardId) +
+        '/views/' +
+        encodeURIComponent(viewId) +
+        '/run',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tenantId, userId, limit }),
+      },
+    );
+    const payload = await response.json().catch(() => ({}));
+    return res.status(response.status).json(payload);
+  } catch (error) {
+    logger.warn('[AnalitricsDashboardRun] Agent unavailable: ' + error.message);
+    return res.status(502).json({ ok: false, error: 'Analitrics dashboard run unavailable' });
+  }
+});
+
 router.post('/catalog/feedback', async (req, res) => {
   const conversationId = String(req.body?.conversationId || '');
   const step = Number(req.body?.step || 0);

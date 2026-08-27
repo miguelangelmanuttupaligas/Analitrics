@@ -46,6 +46,11 @@ const loadInsightsView = () =>
     Component: m.default,
   }));
 
+const loadAnalitricsDashboardsPage = () =>
+  import('~/components/Analitrics/AnalitricsDashboardsPage').then((m) => ({
+    Component: m.default,
+  }));
+
 const loadProjectsView = () =>
   import('~/components/Projects').then((m) => ({
     Component: m.ProjectsView,
@@ -159,6 +164,10 @@ export const router = createBrowserRouter(
             {
               path: 'insights',
               lazy: loadInsightsView,
+            },
+            {
+              path: 'dashboards/:dashboardId?',
+              lazy: loadAnalitricsDashboardsPage,
             },
             {
               path: 'skills/new',

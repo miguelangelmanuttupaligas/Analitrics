@@ -140,6 +140,7 @@ function ExpandedPanel({
   const { active, setActive } = useActivePanel();
   const effectiveActive = resolveActivePanel(active, links);
   const isInsightsRoute = location.pathname.startsWith('/insights');
+  const isDashboardsRoute = location.pathname.startsWith('/dashboards');
 
   const toggleLabel = expanded ? 'com_nav_close_sidebar' : 'com_nav_open_sidebar';
   const toggleClick = expanded ? onCollapse : onExpand;
@@ -177,7 +178,9 @@ function ExpandedPanel({
             isActive={
               link.id === 'insights'
                 ? isInsightsRoute
-                : !isInsightsRoute && link.id === effectiveActive
+                : link.id === 'dashboards'
+                  ? isDashboardsRoute
+                : !isInsightsRoute && !isDashboardsRoute && link.id === effectiveActive
             }
             expanded={expanded ?? true}
             setActive={setActive}

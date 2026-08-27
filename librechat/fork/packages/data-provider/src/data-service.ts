@@ -1509,3 +1509,26 @@ export const saveAnalitricsCatalogFeedback = <T = unknown>(payload: {
 }): Promise<T> => {
   return request.post(endpoints.analitricsCatalogFeedback(), payload);
 };
+
+export const listAnalitricsDashboards = <T = unknown>(): Promise<T> => {
+  return request.get(endpoints.analitricsDashboards());
+};
+
+export const getAnalitricsDashboard = <T = unknown>(dashboardId: string): Promise<T> => {
+  return request.get(endpoints.analitricsDashboard(dashboardId));
+};
+
+export const createAnalitricsDashboardFromAnalysis = <T = unknown>(payload: {
+  conversationId: string;
+  title?: string;
+}): Promise<T> => {
+  return request.post(endpoints.analitricsDashboardFromAnalysis(), payload);
+};
+
+export const runAnalitricsDashboardView = <T = unknown>(
+  dashboardId: string,
+  viewId: string,
+  payload: { limit?: number } = {},
+): Promise<T> => {
+  return request.post(endpoints.analitricsDashboardViewRun(dashboardId, viewId), payload);
+};

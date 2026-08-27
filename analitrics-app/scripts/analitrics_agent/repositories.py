@@ -99,6 +99,24 @@ class AgentRunRepository:
     def __init__(self, database_factory: MongoDatabaseFactory) -> None:
         self._database_factory = database_factory
 
+    def find_latest_success(
+        self,
+        tenant_id: str,
+        user_id: str,
+        conversation_id: str,
+    ) -> dict[str, Any] | None:
+        return self._database_factory.get_database().analitrics_agent_runs.find_one(
+            {
+                "tenantId": tenant_id,
+                "userId": user_id,
+                "conversationId": conversation_id,
+                "status": "ok",
+                "sql": {"$type": "string", "$ne": ""},
+            },
+            {"_id": 0},
+            sort=[("createdAt", -1)],
+        )
+
     def save_run(
         self,
         request: AgentRequest,
