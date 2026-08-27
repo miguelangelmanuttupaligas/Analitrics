@@ -11,6 +11,7 @@ from .config import bool_env, env
 from .json_utils import profiles_for_storage
 from .models import AgentRequest, AgentState
 from .naming import file_signature
+from .tracing import normalize_search_text, stable_text_hash
 
 
 def utc_now() -> datetime:
@@ -18,9 +19,15 @@ def utc_now() -> datetime:
 
 
 class MongoDatabaseFactory:
+    def __init__(self) -> None:
+        self._mongo = None
+        self._database = None
+
     def get_database(self):
-        mongo = connect_mongo()
-        return mongo[env("MONGO_DB", "LibreChat")]
+        if self._database is None:
+            self._mongo = connect_mongo()
+            self._database = self._mongo[env("MONGO_DB", "LibreChat")]
+        return self._database
 
 
 class AnalysisConversationRepository:
@@ -107,6 +114,8 @@ class AgentRunRepository:
             "conversationId": request.conversation_id,
             "messageId": request.message_id,
             "question": request.question,
+            "questionNormalized": normalize_search_text(request.question),
+            "questionHash": stable_text_hash(request.question),
             "status": "error" if error else "ok",
             "error": error,
             "createdAt": utc_now(),

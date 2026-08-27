@@ -28,6 +28,7 @@ up down:
 			docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" up -d --remove-orphans; \
 			if [[ "$(STACK)" == "librechat" ]]; then \
 				for i in {1..30}; do docker exec analitrics-analitrics-mongodb mongosh LibreChat --quiet --eval 'db.adminCommand({ping:1}).ok' >/dev/null 2>&1 && break || sleep 1; done; \
+				docker exec analitrics-analitrics-mongodb mongosh LibreChat --quiet --eval 'db.files.createIndex({tenantId:1,source:1,user:1,file_id:1,createdAt:-1},{name:"analitrics_files_owner_file"}); db.files.createIndex({tenantId:1,source:1,user:1,filename:1,createdAt:-1},{name:"analitrics_files_owner_filename"}); db.messages.createIndex({conversationId:1,messageId:1,createdAt:1},{name:"analitrics_messages_conversation_message"}); db.analitrics_agent_runs.createIndex({tenantId:1,userId:1,conversationId:1,createdAt:-1},{name:"analitrics_runs_conversation_recent"}); db.analitrics_agent_runs.createIndex({tenantId:1,userId:1,questionNormalized:1,createdAt:-1},{name:"analitrics_runs_question_search"}); printjson({ok:true,indexes:"analitrics"});'; \
 				docker exec analitrics-analitrics-mongodb mongosh LibreChat --quiet --eval 'const locked={PROMPTS:{USE:false,CREATE:false,SHARE:false,SHARE_PUBLIC:false},AGENTS:{USE:true,CREATE:false,SHARE:false,SHARE_PUBLIC:false},RUN_CODE:{USE:false},WEB_SEARCH:{USE:false},MARKETPLACE:{USE:false},MCP_SERVERS:{USE:true,CREATE:false,SHARE:false,SHARE_PUBLIC:false,CONFIGURE_OBO:false},REMOTE_AGENTS:{USE:false,CREATE:false,SHARE:false,SHARE_PUBLIC:false},SKILLS:{USE:false,CREATE:false,SHARE:false,SHARE_PUBLIC:false}}; const res=db.roles.updateMany({name:{$$in:["USER","ADMIN"]}},{$$set:Object.fromEntries(Object.entries(locked).map(([k,v])=>["permissions."+k,v]))}); printjson({matched:res.matchedCount,modified:res.modifiedCount,locked:Object.keys(locked)});'; \
 				docker exec analitrics-analitrics-mongodb mongosh LibreChat --quiet --eval 'const author=db.users.findOne({email:"analitrics.user@example.com"},{_id:1,email:1}); if(!author){printjson({ok:false,skipped:"agent_analitrics",reason:"author user not found"}); quit(0);} const viewer=db.accessroles.findOne({accessRoleId:"agent_viewer",resourceType:"agent"},{_id:1,permBits:1}); const owner=db.accessroles.findOne({accessRoleId:"agent_owner",resourceType:"agent"},{_id:1,permBits:1}); if(!viewer||!owner){throw new Error("agent access roles not found");} const now=new Date(); const existing=db.agents.findOne({id:"agent_analitrics"},{_id:1}); const agentId=existing?existing._id:new ObjectId(); db.agents.updateOne({id:"agent_analitrics"},{$$set:{_id:agentId,id:"agent_analitrics",name:"Analitrics",description:"Agente analítico único de Analitrics.",instructions:"Responde únicamente preguntas analíticas sobre los archivos cargados por el usuario.",provider:"openAI",model:"analitrics-agent",model_parameters:{},tools:[],tool_resources:{},author:author._id,category:"general",execute_code:false,file_search:false,web_search:false,is_promoted:true,tenantId:"analitrics",updatedAt:now},$$setOnInsert:{createdAt:now}},{upsert:true}); db.aclentries.updateOne({principalType:"public",resourceType:"agent",resourceId:agentId},{$$set:{permBits:viewer.permBits,roleId:viewer._id,grantedBy:author._id,grantedAt:now}},{upsert:true}); db.aclentries.updateOne({principalType:"user",principalId:author._id,principalModel:"User",resourceType:"agent",resourceId:agentId},{$$set:{permBits:owner.permBits,roleId:owner._id,grantedBy:author._id,grantedAt:now}},{upsert:true}); printjson({ok:true,id:"agent_analitrics",_id:agentId,publicPermBits:viewer.permBits,ownerPermBits:owner.permBits});'; \
 			fi ;; \
@@ -117,6 +118,13 @@ analitrics-agent:
 		exit 2; \
 	fi
 	@set -a; source <(grep -v '^UID=' librechat/custom/.env); set +a; \
+	env_args=(); \
+	[[ -n "$(ANALITRICS_CONVERSATION_PLANNER_MODEL)" ]] && env_args+=(-e "ANALITRICS_CONVERSATION_PLANNER_MODEL=$(ANALITRICS_CONVERSATION_PLANNER_MODEL)"); \
+	[[ -n "$(ANALITRICS_NL_SQL_MODEL)" ]] && env_args+=(-e "ANALITRICS_NL_SQL_MODEL=$(ANALITRICS_NL_SQL_MODEL)"); \
+	[[ -n "$(ANALITRICS_SQL_REPAIR_MODEL)" ]] && env_args+=(-e "ANALITRICS_SQL_REPAIR_MODEL=$(ANALITRICS_SQL_REPAIR_MODEL)"); \
+	[[ -n "$(ANALITRICS_ANSWER_MODEL)" ]] && env_args+=(-e "ANALITRICS_ANSWER_MODEL=$(ANALITRICS_ANSWER_MODEL)"); \
+	[[ -n "$(ANALITRICS_CRITIC_MODEL)" ]] && env_args+=(-e "ANALITRICS_CRITIC_MODEL=$(ANALITRICS_CRITIC_MODEL)"); \
+	[[ -n "$(ANALITRICS_CHART_SPEC_MODEL)" ]] && env_args+=(-e "ANALITRICS_CHART_SPEC_MODEL=$(ANALITRICS_CHART_SPEC_MODEL)"); \
 	docker run --rm --user "$$(id -u):$$(id -g)" --network network-analitrics --add-host host.docker.internal:host-gateway --env-file librechat/custom/.env \
 		-e MONGO_URI=mongodb://mongodb:27017/LibreChat \
 		-e MONGO_DB=LibreChat \
@@ -126,10 +134,15 @@ analitrics-agent:
 		-e AWS_REGION="$${RUSTFS_REGION:-us-east-1}" \
 		-e AWS_BUCKET_NAME="$${RUSTFS_BUCKET_NAME:-librechat}" \
 		-e ANALITRICS_TRACING_ENABLED="$${ANALITRICS_TRACING_ENABLED:-true}" \
+		-e ANALITRICS_DEBUG_LLM_STATS="$${ANALITRICS_DEBUG_LLM_STATS:-false}" \
+		-e ANALITRICS_LLM_TIMEOUT_SECONDS="$${ANALITRICS_LLM_TIMEOUT_SECONDS:-120}" \
+		-e ANALITRICS_LLM_PROVIDER="$(if $(ANALITRICS_LLM_PROVIDER),$(ANALITRICS_LLM_PROVIDER),$${ANALITRICS_LLM_PROVIDER:-openai})" \
+		-e ANALITRICS_DEFAULT_MODEL="$(if $(ANALITRICS_DEFAULT_MODEL),$(ANALITRICS_DEFAULT_MODEL),$${ANALITRICS_DEFAULT_MODEL:-gpt-5.5})" \
 		-e OTEL_EXPORTER_OTLP_ENDPOINT="$${OTEL_EXPORTER_OTLP_ENDPOINT:-http://phoenix:4317}" \
 		-e PHOENIX_PROJECT_NAME="$${PHOENIX_PROJECT_NAME:-analitrics-mvp}" \
 		-e PYTHONPATH=/app/scripts \
 		-v /var/analitrics/analytics:/var/analitrics/analytics \
+		"$${env_args[@]}" \
 		analitrics-app:local -m analitrics_agent.cli $${FILE_ID:+--file-id "$$FILE_ID"} $${FILENAME:+--filename "$$FILENAME"} $${FILE_IDS:+--file-ids "$$FILE_IDS"} $${FILENAMES:+--filenames "$$FILENAMES"} $${USER_ID:+--user-id "$$USER_ID"} --conversation-id "$$CONVERSATION_ID" $${MESSAGE_ID:+--message-id "$$MESSAGE_ID"} --question "$$QUESTION"
 
 prepare-dirs:

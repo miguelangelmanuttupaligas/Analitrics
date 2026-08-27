@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
+import unicodedata
 from typing import Any, Callable, Protocol
 
 import sqlglot
@@ -144,14 +146,16 @@ class SqlExplorationTools:
         self,
         workspace: Any,
         profiles: list[dict[str, Any]],
+        catalog_feedback: list[dict[str, Any]] | None = None,
         validator: SqlReadOnlyValidator | None = None,
     ) -> None:
         self._workspace = workspace
         self._profiles = [profile for profile in profiles if not profile.get("system_table")]
+        self._catalog_feedback = [item for item in (catalog_feedback or []) if str(item.get("content") or "").strip()]
         self._validator = validator or SqlReadOnlyValidator()
         self._known_tables = [str(profile.get("table")) for profile in profiles if profile.get("table")]
 
-    def seed(self, files: list[Any], catalog_feedback: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    def seed(self, files: list[Any]) -> dict[str, Any]:
         return {
             "files": [
                 {
@@ -161,24 +165,17 @@ class SqlExplorationTools:
                 for file in files[:8]
             ],
             "table_count": len(self._profiles),
-            "business_feedback": [
-                {
-                    "source_file_id": item.get("source_file_id"),
-                    "source_filename": item.get("source_filename"),
-                    "step": item.get("step"),
-                    "label": item.get("label"),
-                    "content": item.get("content"),
-                }
-                for item in (catalog_feedback or [])
-                if str(item.get("content") or "").strip()
-            ],
+            "table_inventory": [self._table_summary(profile) for profile in self._profiles[:8]],
+            "catalog_summary": self._catalog_summary(),
             "tool_policy": {
                 "max_tool_calls": int(env("ANALITRICS_SQL_TOOL_MAX_CALLS", "8")),
                 "sample_rows_limit": 5,
                 "preview_rows_limit": 5,
+                "catalog_search_limit": 5,
                 "read_only": True,
                 "known_tables_only": True,
-                "table_inventory": "call list_tables when table names are needed",
+                "table_inventory": "use table_inventory first; call list_tables only if more tables are needed",
+                "business_catalog": "call search_catalog, resolve_business_term, or get_business_rules when business definitions are needed",
             },
         }
 
@@ -193,7 +190,109 @@ class SqlExplorationTools:
             return self._sample_rows(str(args.get("table") or ""), self._int(args.get("limit"), 3, 1, 5))
         if action == "preview_sql":
             return self._preview_sql(str(args.get("sql") or ""))
+        if action == "search_catalog":
+            return self._search_catalog(str(args.get("query") or ""), self._int(args.get("limit"), 5, 1, 10))
+        if action == "resolve_business_term":
+            return self._resolve_business_term(str(args.get("term") or ""))
+        if action == "get_business_rules":
+            return self._get_business_rules()
         raise RuntimeError(f"Unsupported SQL exploration action: {action}")
+
+    def _catalog_summary(self) -> dict[str, Any]:
+        by_step: dict[str, int] = {}
+        sources: set[str] = set()
+        for item in self._catalog_feedback:
+            by_step[str(item.get("step") or "unknown")] = by_step.get(str(item.get("step") or "unknown"), 0) + 1
+            if item.get("source_filename"):
+                sources.add(str(item.get("source_filename")))
+        return {
+            "available": bool(self._catalog_feedback),
+            "entry_count": len(self._catalog_feedback),
+            "sources": sorted(sources)[:8],
+            "entries_by_step": by_step,
+        }
+
+    def _search_catalog(self, query: str, limit: int) -> dict[str, Any]:
+        normalized_query = self._normalize(query)
+        terms = [term for term in normalized_query.split() if len(term) > 2]
+        scored: list[tuple[int, dict[str, Any]]] = []
+        for item in self._catalog_feedback:
+            haystack = self._normalize(
+                " ".join(
+                    str(value or "")
+                    for value in [
+                        item.get("label"),
+                        item.get("content"),
+                        item.get("source_filename"),
+                        self._step_label(item.get("step")),
+                    ]
+                )
+            )
+            score = sum(1 for term in terms if term in haystack)
+            if normalized_query and normalized_query in haystack:
+                score += 3
+            if score > 0:
+                scored.append((score, item))
+        scored.sort(key=lambda row: row[0], reverse=True)
+        return {
+            "query": query,
+            "matches": [self._catalog_entry(item, score) for score, item in scored[:limit]],
+        }
+
+    def _resolve_business_term(self, term: str) -> dict[str, Any]:
+        result = self._search_catalog(term, 8)
+        matches = result.get("matches") or []
+        return {
+            "term": term,
+            "resolved": bool(matches),
+            "definitions": matches,
+            "instruction": "Use matching definitions as priority business context. If no match exists, do not invent definitions.",
+        }
+
+    def _get_business_rules(self) -> dict[str, Any]:
+        rules = [
+            self._catalog_entry(item)
+            for item in self._catalog_feedback
+            if int(item.get("step") or 0) == 4
+        ]
+        return {
+            "rules": rules[:12],
+            "rule_count": len(rules),
+        }
+
+    def _catalog_entry(self, item: dict[str, Any], score: int | None = None) -> dict[str, Any]:
+        entry = {
+            "source_file_id": item.get("source_file_id"),
+            "source_filename": item.get("source_filename"),
+            "step": item.get("step"),
+            "step_label": self._step_label(item.get("step")),
+            "label": item.get("label"),
+            "content": self._trim_text(item.get("content"), 900),
+            "updated_at": item.get("updated_at"),
+        }
+        if score is not None:
+            entry["score"] = score
+        return entry
+
+    def _step_label(self, step: Any) -> str:
+        labels = {
+            1: "conceptos de negocio",
+            2: "indicadores o métricas",
+            3: "dimensiones",
+            4: "reglas de negocio",
+            5: "correcciones",
+            6: "definiciones aprobadas",
+        }
+        try:
+            return labels.get(int(step), "catálogo enriquecido")
+        except (TypeError, ValueError):
+            return "catálogo enriquecido"
+
+    def _normalize(self, value: str) -> str:
+        text = unicodedata.normalize("NFKD", value or "")
+        text = "".join(char for char in text if not unicodedata.combining(char))
+        text = re.sub(r"\s+", " ", text.lower()).strip()
+        return text
 
     def find_compatible_tables(self, table: str | None = None) -> dict[str, Any]:
         groups: list[dict[str, Any]] = []
@@ -296,6 +395,10 @@ class SqlExplorationTools:
             parsed = default
         return max(minimum, min(maximum, parsed))
 
+    def _trim_text(self, value: Any, limit: int) -> str:
+        text = str(value or "").strip()
+        return text if len(text) <= limit else text[:limit].rstrip() + "..."
+
 
 class ToolAssistedSqlGenerator:
     def __init__(
@@ -322,13 +425,14 @@ class ToolAssistedSqlGenerator:
     ) -> SqlGenerationResult:
         if workspace is None:
             raise RuntimeError("Tool-assisted SQL generation requires an initialized DuckDB workspace")
-        tools = SqlExplorationTools(workspace, profiles, self._validator)
-        tool_results: list[dict[str, Any]] = []
+        tools = SqlExplorationTools(workspace, profiles, catalog_feedback, self._validator)
+        tool_results: list[dict[str, Any]] = self._seed_tool_results_from_cache(analytical_context or {})
         consolidation_requested = self._consolidation_requested(question, analytical_context or {})
+        final_sql_failures = 0
         for step in range(self._max_tool_calls + 1):
             action = self._next_action(
                 question=question,
-                seed=tools.seed(files, catalog_feedback),
+                seed=tools.seed(files),
                 analytical_context=analytical_context or {},
                 tool_results=tool_results,
                 force_final=step >= self._max_tool_calls,
@@ -359,6 +463,7 @@ class ToolAssistedSqlGenerator:
                     )
                     tools.run("preview_sql", {"sql": sql})
                 except Exception as exc:
+                    final_sql_failures += 1
                     if step >= self._max_tool_calls:
                         raise
                     tool_results.append(
@@ -371,12 +476,17 @@ class ToolAssistedSqlGenerator:
                     )
                     if progress is not None:
                         progress("La consulta final necesita ajuste; devuelvo el error al generador SQL.")
+                    if final_sql_failures >= 2:
+                        raise RuntimeError(f"Final SQL failed validation twice; stopping to avoid excessive LLM/tool retries: {exc}") from exc
                     continue
                 return SqlGenerationResult(
                     sql=sql,
                     rationale=rationale,
                     backend="llm-tools",
-                    data_strategy=self._compact_data_strategy(data_strategy),
+                    data_strategy={
+                        **self._compact_data_strategy(data_strategy),
+                        "semantic_cache": self._semantic_cache(data_strategy, tool_results),
+                    },
                 )
             if step >= self._max_tool_calls:
                 raise RuntimeError(f"Tool-assisted SQL generation exceeded {self._max_tool_calls} tool calls")
@@ -403,6 +513,48 @@ class ToolAssistedSqlGenerator:
                     }
                 )
         raise RuntimeError("Tool-assisted SQL generation did not produce final_sql")
+
+    def _seed_tool_results_from_cache(self, analytical_context: dict[str, Any]) -> list[dict[str, Any]]:
+        cache = analytical_context.get("semantic_cache")
+        if not isinstance(cache, dict):
+            return []
+        seeded: list[dict[str, Any]] = []
+        compatible_groups = cache.get("compatible_groups")
+        if isinstance(compatible_groups, list) and compatible_groups:
+            seeded.append(
+                {
+                    "step": 0,
+                    "action": "find_compatible_tables",
+                    "args": {"source": "semantic_cache"},
+                    "result": {"compatible_groups": compatible_groups[:4]},
+                    "cached": True,
+                }
+            )
+        for table in (cache.get("described_tables") or [])[:4] if isinstance(cache.get("described_tables"), list) else []:
+            if not isinstance(table, dict) or not table.get("table"):
+                continue
+            seeded.append(
+                {
+                    "step": 0,
+                    "action": "describe_table",
+                    "args": {"table": table.get("table"), "source": "semantic_cache"},
+                    "result": table,
+                    "cached": True,
+                }
+            )
+        for term in (cache.get("catalog_terms") or [])[:4] if isinstance(cache.get("catalog_terms"), list) else []:
+            if not isinstance(term, dict):
+                continue
+            seeded.append(
+                {
+                    "step": 0,
+                    "action": "resolve_business_term",
+                    "args": {"source": "semantic_cache"},
+                    "result": term,
+                    "cached": True,
+                }
+            )
+        return seeded[:8]
 
     def repair(
         self,
@@ -463,10 +615,20 @@ class ToolAssistedSqlGenerator:
         tool_results: list[dict[str, Any]],
         consolidation_requested: bool,
     ) -> None:
+        used_tables = self._used_tables(sql)
         mode = str(data_strategy.get("mode") or "").strip()
         if mode not in {"single_table", "union_compatible_tables", "join_tables", "cannot_combine"}:
-            raise RuntimeError("data_strategy.mode is required and must be single_table, union_compatible_tables, join_tables, or cannot_combine")
-        used_tables = self._used_tables(sql)
+            if len(used_tables) <= 1:
+                mode = "single_table"
+            elif re.search(r"\bunion\b", sql, flags=re.IGNORECASE):
+                mode = "union_compatible_tables"
+            else:
+                mode = "join_tables"
+            data_strategy["mode"] = mode
+            data_strategy["reason"] = self._trim_text(
+                data_strategy.get("reason") or "Modo técnico inferido desde el SQL porque el modelo omitió data_strategy.mode.",
+                180,
+            )
         declared_used = {str(value) for value in data_strategy.get("tables_used") or [] if value}
         if declared_used and declared_used != used_tables:
             data_strategy["tables_used_declared"] = sorted(declared_used)
@@ -474,8 +636,6 @@ class ToolAssistedSqlGenerator:
         data_strategy["tables_used"] = sorted(used_tables)
         if len(used_tables) > 1 and mode == "single_table":
             raise RuntimeError("data_strategy.mode=single_table but SQL uses multiple tables")
-        if mode in {"union_compatible_tables", "join_tables"} and not self._has_successful_preview(tool_results):
-            raise RuntimeError("Multi-table strategy requires preview_sql before final_sql")
         if not consolidation_requested:
             return
         if not self._has_action(tool_results, "find_compatible_tables"):
@@ -509,6 +669,44 @@ class ToolAssistedSqlGenerator:
         if isinstance(declared, list) and declared:
             compacted["tables_used_declared"] = [str(value) for value in declared if value][:8]
         return compacted
+
+    def _semantic_cache(self, data_strategy: dict[str, Any], tool_results: list[dict[str, Any]]) -> dict[str, Any]:
+        compatible_groups: list[dict[str, Any]] = []
+        described_tables: list[dict[str, Any]] = []
+        catalog_terms: list[dict[str, Any]] = []
+        for item in tool_results:
+            action = item.get("action")
+            result = item.get("result")
+            if not isinstance(result, dict):
+                continue
+            if action == "find_compatible_tables":
+                groups = result.get("compatible_groups") or []
+                if groups:
+                    compatible_groups.extend(groups[:4])
+                compatible = result.get("compatible_tables") or []
+                if compatible:
+                    compatible_groups.append(
+                        {
+                            "shared_columns": compatible[0].get("shared_columns") or [],
+                            "tables": compatible[:8],
+                        }
+                    )
+            elif action == "describe_table":
+                described_tables.append(result)
+            elif action == "resolve_business_term":
+                catalog_terms.append(result)
+            elif action == "search_catalog":
+                catalog_terms.append({"term": result.get("query"), "resolved": bool(result.get("matches")), "definitions": result.get("matches") or []})
+        return {
+            "data_strategy": {
+                "mode": data_strategy.get("mode"),
+                "tables_used": data_strategy.get("tables_used") or [],
+                "reason": self._trim_text(data_strategy.get("reason"), 180),
+            },
+            "compatible_groups": compatible_groups[:4],
+            "described_tables": described_tables[:6],
+            "catalog_terms": catalog_terms[:8],
+        }
 
     def _trim_text(self, value: Any, limit: int) -> str:
         text = str(value or "").strip()
@@ -590,16 +788,42 @@ class ToolAssistedSqlGenerator:
                 "compatible_tables": (result.get("compatible_tables") or [])[:8],
                 "compatible_groups": (result.get("compatible_groups") or [])[:6],
             }
+        if action == "search_catalog":
+            return {
+                "query": result.get("query"),
+                "matches": (result.get("matches") or [])[:5],
+            }
+        if action == "resolve_business_term":
+            return {
+                "term": result.get("term"),
+                "resolved": result.get("resolved"),
+                "definitions": (result.get("definitions") or [])[:5],
+                "instruction": result.get("instruction"),
+            }
+        if action == "get_business_rules":
+            return {
+                "rule_count": result.get("rule_count"),
+                "rules": (result.get("rules") or [])[:8],
+            }
         return result
 
     def _progress_message(self, action: str, args: dict[str, Any], step: int) -> str:
         table = args.get("table")
+        query = args.get("query") or args.get("term")
         if action == "list_tables":
             return f"Explorando tablas disponibles ({step}/{self._max_tool_calls})."
         if action == "describe_table" and table:
             return f"Revisando columnas de {table} ({step}/{self._max_tool_calls})."
         if action == "find_compatible_tables":
             return f"Buscando tablas compatibles para consolidar datos ({step}/{self._max_tool_calls})."
+        if action == "search_catalog":
+            suffix = f": {query}" if query else ""
+            return f"Buscando definiciones de negocio en el catálogo{suffix} ({step}/{self._max_tool_calls})."
+        if action == "resolve_business_term":
+            suffix = f": {query}" if query else ""
+            return f"Resolviendo término de negocio{suffix} ({step}/{self._max_tool_calls})."
+        if action == "get_business_rules":
+            return f"Consultando reglas de negocio activas ({step}/{self._max_tool_calls})."
         if action == "sample_rows" and table:
             return f"Inspeccionando una muestra de {table} ({step}/{self._max_tool_calls})."
         if action == "preview_sql":

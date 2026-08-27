@@ -8,7 +8,7 @@ from .llm_client import JsonLlmClient
 from .prompts import CONVERSATION_PLANNER_SYSTEM_PROMPT
 
 
-VALID_REQUEST_KINDS = {"new_question", "follow_up", "correction", "clarification", "out_of_scope"}
+VALID_REQUEST_KINDS = {"new_question", "follow_up", "correction", "clarification", "metadata_literal", "out_of_scope"}
 VALID_CONFIDENCE = {"high", "medium", "low"}
 VALID_CHART_TYPES = {"bar", "line", "area", "pie", "scatter", "table"}
 
@@ -63,6 +63,11 @@ class ConversationPlanner:
         requires_sql = raw.get("requires_sql")
         if requires_sql is None:
             requires_sql = not (request_kind == "correction" and feedback_candidate and not bool(raw.get("chart_request")))
+        metadata_request = raw.get("metadata_request") if isinstance(raw.get("metadata_request"), dict) else None
+        if request_kind == "metadata_literal":
+            requires_sql = False
+        if bool(raw.get("chart_request")) and request_kind != "out_of_scope":
+            requires_sql = True
         return {
             "request_kind": request_kind,
             "confidence": confidence,
@@ -75,6 +80,7 @@ class ConversationPlanner:
             "chart_request": bool(raw.get("chart_request")),
             "chart_type": chart_type,
             "catalog_feedback_candidate": self._normalize_feedback(feedback_candidate, analytical_context),
+            "metadata_request": self._normalize_metadata_request(metadata_request),
             "reason": str(raw.get("reason") or ""),
             "planner": "llm",
         }
@@ -124,6 +130,19 @@ class ConversationPlanner:
         if text in {"false", "0", "no"}:
             return False
         return default
+
+    def _normalize_metadata_request(self, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not value:
+            return None
+        kind = str(value.get("kind") or "").strip().lower()
+        if kind not in {"columns", "catalog", "tables", "files", "rows", "cache"}:
+            kind = "catalog"
+        return {
+            "kind": kind,
+            "target_filename": str(value.get("target_filename") or "").strip() or None,
+            "target_table": str(value.get("target_table") or "").strip() or None,
+            "reason": str(value.get("reason") or "").strip()[:300],
+        }
 
     def _default_source(self, analytical_context: dict[str, Any]) -> dict[str, Any]:
         files = (analytical_context.get("dataset_context") or {}).get("files") or []

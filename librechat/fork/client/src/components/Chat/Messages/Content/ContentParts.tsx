@@ -21,7 +21,6 @@ import EditContentParts from './EditContentParts';
 import { EmptyText, AgentUpdate } from './Parts';
 import ApprovalProvider from './ApprovalContext';
 import Sources from '~/components/Web/Sources';
-import AnalitricsChart from './AnalitricsChart';
 import ToolCallGroup from './ToolCallGroup';
 import Container from './Container';
 import Part from './Part';
@@ -451,11 +450,6 @@ const ContentParts = memo(function ContentParts({
   }, [absoluteIndexAt, content]);
   const postSteerAuthors = resumeAuthors ?? detectedResumeAuthors;
 
-  const chartParts = useMemo(
-    () => sequentialParts.filter(({ part }) => isAnalitricsChartPart(part)),
-    [sequentialParts],
-  );
-
   const groupedParts = useMemo(
     () =>
       groupSequentialToolCalls(
@@ -697,12 +691,6 @@ const ContentParts = memo(function ContentParts({
           );
           return nodes;
         })}
-      {chartParts.map(({ part, idx }) => (
-        <AnalitricsChart
-          key={`analitrics-chart-${messageId}-${idx}`}
-          output={getAnalitricsChartOutput(part)}
-        />
-      ))}
       {!nestedActivityPhase && <WorkspaceChanges attachments={workspaceChanges} />}
     </SearchContext.Provider>
   );

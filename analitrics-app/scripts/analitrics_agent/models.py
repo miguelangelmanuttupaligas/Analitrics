@@ -43,6 +43,7 @@ class AgentState(TypedDict, total=False):
     sql_validation_attempt: int
     sql_repaired: bool
     rows: list[dict[str, Any]]
+    result_columns: list[str]
     answer: str
     critic: dict[str, Any]
     chart_spec: dict[str, Any]
@@ -77,6 +78,7 @@ def state_output(request: AgentRequest, state: AgentState) -> dict[str, Any]:
         "plan": state.get("plan"),
         "sql": state.get("sql"),
         "row_count": len(state.get("rows") or []),
+        "result_columns": state.get("result_columns") or [],
         "rows_preview": (state.get("rows") or [])[:20],
         "answer": state.get("answer"),
         "critic": state.get("critic"),

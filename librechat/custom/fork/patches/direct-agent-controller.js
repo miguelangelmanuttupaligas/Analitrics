@@ -152,12 +152,24 @@ function buildAnalitricsChartPayload(payload) {
     return null;
   }
 
+  const metricKeys = (yKeys.length > 0 ? yKeys : [valueField]).filter((key) =>
+    rows.some((row) => isNumericValue(row?.[key])),
+  );
+  const groupField =
+    typeof spec?.category_label === 'string' &&
+    spec.category_label &&
+    spec.category_label !== categoryField &&
+    rows.some((row) => row?.[spec.category_label] != null)
+      ? spec.category_label
+      : null;
   const points = rows
-    .filter((row) => row && isNumericValue(row[valueField]))
+    .filter((row) => row && metricKeys.some((key) => isNumericValue(row[key])))
     .slice(0, 10)
     .map((row) => ({
-      label: cleanMermaidLabel(row[categoryField]),
-      value: toMermaidNumber(row[valueField]),
+      label: cleanMermaidLabel(groupField ? String(row[groupField]) + ' · ' + String(row[categoryField]) : row[categoryField]),
+      group: groupField ? cleanMermaidLabel(row[groupField]) : null,
+      ...Object.fromEntries(metricKeys.map((key) => [key, toMermaidNumber(row[key])])),
+      value: toMermaidNumber(row[metricKeys[0]]),
     }));
   if (points.length === 0) {
     return null;
@@ -168,7 +180,9 @@ function buildAnalitricsChartPayload(payload) {
     chart_type: chartSpec.chart_type === 'line' ? 'line' : 'bar',
     title: spec?.title ? String(spec.title).slice(0, 120) : cleanMermaidLabel((valueField || 'Valor') + ' por ' + (categoryField || 'categoría')),
     category_field: categoryField,
-    value_field: valueField,
+    value_field: metricKeys[0],
+    y_keys: metricKeys,
+    group_field: groupField,
     points,
     reason: chartSpec.reason || '',
   };
@@ -274,23 +288,6 @@ function buildAnalitricsToolContent(payload, answer) {
   ];
 
   content.push({ type: 'text', text: answer });
-
-  const chartPayload = buildAnalitricsChartPayload(payload);
-  if (chartPayload) {
-    content.push({
-      type: 'tool_call',
-      tool_call: {
-        id: 'analitrics_chart_' + String(payload?.runId || crypto.randomUUID()).replace(/[^a-zA-Z0-9_-]/g, '_'),
-        name: 'analitrics_chart',
-        args: formatAnalitricsJson({
-          chart_type: chartPayload.chart_type,
-          point_count: chartPayload.points.length,
-        }),
-        output: formatAnalitricsJson(chartPayload),
-        progress: 1,
-      },
-    });
-  }
 
   if (feedbackProposal?.suggested) {
     content.push({
@@ -552,6 +549,28 @@ async function runAnalitricsDirectController(req, res) {
     }
   };
 
+  const emitReasoningStatus = async (message) => {
+    if (!message) {
+      return;
+    }
+    await emitMessageStep();
+    await GenerationJobManager.emitChunk(streamId, {
+      event: 'on_message_delta',
+      data: {
+        id: messageStepId,
+        delta: {
+          content: [
+            {
+              type: 'think',
+              think: message,
+              reasoning_label: message,
+            },
+          ],
+        },
+      },
+    });
+  };
+
   let answer = '';
   let hasAnswerTokens = false;
   let finalPayload = null;
@@ -563,8 +582,7 @@ async function runAnalitricsDirectController(req, res) {
       return;
     }
     emittedProgress.add(displayMessage);
-    const statusLine = displayMessage + '\\n';
-    await emitTextDelta(statusLine);
+    await emitReasoningStatus(displayMessage);
   };
 
   const emitProgress = async (message) => {

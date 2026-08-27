@@ -127,8 +127,8 @@ def safe_child_path(base: Path, filename: str, fallback: str) -> Path:
     return target
 
 
-def resolve_file(args: argparse.Namespace) -> FileMetadata:
-    mongo = connect_mongo()
+def resolve_file(args: argparse.Namespace, database: Any | None = None) -> FileMetadata:
+    mongo = None if database is not None else connect_mongo()
     db_name = env("MONGO_DB", "LibreChat")
     query: dict[str, Any] = {"tenantId": args.tenant_id, "source": "s3"}
     user_id = getattr(args, "user_id", None)
@@ -141,7 +141,8 @@ def resolve_file(args: argparse.Namespace) -> FileMetadata:
     else:
         raise RuntimeError("Provide --file-id or --filename")
 
-    doc = mongo[db_name].files.find_one(query, sort=[("createdAt", -1)])
+    db = database if database is not None else mongo[db_name]
+    doc = db.files.find_one(query, sort=[("createdAt", -1)])
     if not doc:
         raise RuntimeError(f"No S3 file metadata found for query: {query}")
 

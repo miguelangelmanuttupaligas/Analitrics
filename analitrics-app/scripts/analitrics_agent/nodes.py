@@ -193,6 +193,7 @@ class AnalyticalAgentNodes:
                 "applied_feedback": applied_feedback,
             }
             effective_question = str(analytical_context.get("effective_question") or self._request.question)
+            literal_metadata = self._literal_metadata_response(conversation_plan, profiles, workspace)
             set_span_attrs(
                 span,
                 {
@@ -221,8 +222,38 @@ class AnalyticalAgentNodes:
                     "analitrics.feedback_auto_applied": bool(applied_feedback),
                     "analitrics.pending_clarification": bool(pending_clarification),
                     "analitrics.needs_clarification": bool(conversation_plan.get("needs_clarification")),
+                    "analitrics.metadata_literal": bool(literal_metadata),
                 },
             )
+            if literal_metadata is not None:
+                self._emit_progress("El planner clasificó la pregunta como metadata literal; respondo desde el perfil local.")
+                return {
+                    **state,
+                    "question": effective_question,
+                    "metadata": files[0],
+                    "files": files,
+                    "local_path": workspace.local_paths[0] if workspace.local_paths else "",
+                    "local_paths": workspace.local_paths,
+                    "tables": tables,
+                    "profiles": profiles,
+                    "catalog_feedback": catalog_feedback,
+                    "analytical_context": analytical_context,
+                    "in_scope": True,
+                    "scope_reason": "metadata_literal_by_planner",
+                    "plan": literal_metadata["plan"],
+                    "sql": "",
+                    "rows": literal_metadata["rows"],
+                    "result_columns": literal_metadata["result_columns"],
+                    "answer": literal_metadata["answer"],
+                    "critic": {
+                        "approved": True,
+                        "skipped": True,
+                        "reason": "Metadata literal answered after LLM planner classification.",
+                    },
+                    "chart_spec": {"chart_required": False, "chart_intent": False, "renderer": "recharts", "spec": None},
+                    "cache_path": str(workspace.cache_path) if workspace.cache_path else "",
+                    "cache_hits": workspace.cache_hits,
+                }
             return {
                 **state,
                 "question": effective_question,
@@ -240,6 +271,16 @@ class AnalyticalAgentNodes:
 
     def check_question_scope(self, state: AgentState) -> AgentState:
         with self._tracer.start_as_current_span("check_question_scope") as span:
+            if state.get("scope_reason") == "metadata_literal_by_planner":
+                set_span_attrs(
+                    span,
+                    {
+                        "analitrics.in_scope": True,
+                        "analitrics.scope_reason": "metadata_literal_by_planner",
+                        "analitrics.requires_sql": False,
+                    },
+                )
+                return state
             self._emit_progress("Verificando que la solicitud pertenezca a los datos cargados...")
             analytical_context = state.get("analytical_context") or {}
             conversation_plan = analytical_context.get("conversation_plan") or {}
@@ -457,10 +498,10 @@ class AnalyticalAgentNodes:
                 span,
                 {
                     "analitrics.row_count": len(rows),
-                    "analitrics.result_columns": list(rows[0].keys()) if rows else [],
+                    "analitrics.result_columns": list(rows_df.columns),
                 },
             )
-            return {**state, "rows": rows}
+            return {**state, "rows": rows, "result_columns": list(rows_df.columns)}
 
     def compose_answer(self, state: AgentState) -> AgentState:
         with self._tracer.start_as_current_span("compose_answer") as span:
@@ -471,28 +512,36 @@ class AnalyticalAgentNodes:
                 "No incluyas tablas markdown, rankings extensos ni listas fila por fila; el gráfico prevalece. "
                 "Redacta solo 1 o 2 frases con la lectura gerencial principal."
                 if chart_intent
-                else "Si el usuario pide tabla, puedes usar una tabla markdown breve."
+                else "Si el usuario pide tabla o gráfico, usa una tabla markdown breve y una lectura ejecutiva."
             )
             answer = self._llm_client.complete_text(
                 system=(
                     "Responde en español, breve y gerencial, usando solo los resultados entregados. "
+                    "No respondas temas externos aunque aparezcan en la pregunta; limita la respuesta al análisis de datos. "
                     "No menciones data_strategy ni nombres técnicos de tablas. "
                     "Solo explica consolidación o limitación si se usaron varias tablas o no se pudo combinar. "
                     "No afirmes que faltan campos si solo no aparecen en rows. "
+                    "Si row_count es mayor que la cantidad de rows recibidas, aclara que rows contiene una vista parcial: "
+                    "usa términos como 'primeras filas', 'top visible' o 'muestra recibida', nunca 'solo estas filas'. "
+                    "Si rows está vacío pero result_columns contiene columnas, responde usando result_columns; "
+                    "eso representa una consulta de esquema, no un fallo. "
+                    "La generación visual de gráficos está deshabilitada; no generes Mermaid, SVG, HTML, Python ni código de visualización. "
+                    "Si el usuario pide un gráfico, responde con una tabla textual clara y una lectura ejecutiva breve. "
                     "No escribas código, SQL, Mermaid ni instrucciones para graficar; el gráfico lo renderiza otro componente. "
                     + chart_instruction
                 ),
                 payload={
                     "question": state["question"],
                     "sql": self._compact_sql(state.get("sql") or ""),
-                    "data_strategy": (state.get("plan") or {}).get("data_strategy") or {},
+                    "data_strategy": self._data_strategy_for_response(state),
                     "rows": self._rows_for_answer(state),
+                    "result_columns": state.get("result_columns") or [],
                     "row_count": len(state.get("rows") or []),
                 },
                 model_env="ANALITRICS_ANSWER_MODEL",
                 default_model="gpt-5.5",
             )
-            answer = sanitize_answer_text(answer, remove_tables=chart_intent)
+            answer = sanitize_answer_text(answer, remove_tables=False)
             answer = self._append_feedback_proposal(answer, state.get("analytical_context") or {})
             self._emit_tokens(answer)
             set_span_attrs(
@@ -535,6 +584,7 @@ class AnalyticalAgentNodes:
             critic = self._llm_client.complete_json(
                 system=(
                     "Valida respuesta contra pregunta, SQL, rows y data_strategy. "
+                    "Si rows está vacío pero result_columns existe, valida como pregunta de esquema. "
                     "Falla solo si no responde, contradice resultados/estrategia o inventa campos. "
                     "No agregues código, SQL ni instrucciones de gráfico. "
                     + chart_instruction
@@ -544,8 +594,9 @@ class AnalyticalAgentNodes:
                 payload={
                     "question": state["question"],
                     "sql": self._compact_sql(state.get("sql") or ""),
-                    "data_strategy": (state.get("plan") or {}).get("data_strategy") or {},
+                    "data_strategy": self._data_strategy_for_response(state),
                     "rows": self._rows_for_critic(state),
+                    "result_columns": state.get("result_columns") or [],
                     "row_count": len(state.get("rows") or []),
                     "answer": state["answer"],
                 },
@@ -636,11 +687,42 @@ class AnalyticalAgentNodes:
 
     def route_after_scope(self, state: AgentState) -> Literal["generate_sql", "persist_analysis_state", "__end__"]:
         plan = (state.get("analytical_context") or {}).get("conversation_plan") or {}
+        if state.get("scope_reason") == "metadata_literal_by_planner":
+            return "__end__"
         if state.get("in_scope") and plan.get("requires_sql") is not False:
             return "generate_sql"
         if state.get("in_scope") and (state.get("analytical_context") or {}).get("feedback_proposal"):
             return "persist_analysis_state"
         return "__end__"
+
+    def route_after_answer(self, state: AgentState) -> Literal["critique_answer", "generate_chart_spec", "persist_analysis_state"]:
+        if not self._should_skip_critic(state):
+            return "critique_answer"
+        state["critic"] = {
+            "approved": True,
+            "issue": None,
+            "revised_answer": None,
+            "skipped": True,
+            "reason": "Simple validated response; critic skipped by adaptive route.",
+        }
+        state["chart_spec"] = {
+            "chart_required": False,
+            "chart_intent": False,
+            "renderer": "recharts",
+            "spec": None,
+            "reason": "El usuario no pidió gráfico.",
+        }
+        return "persist_analysis_state"
+
+    def route_after_critic(self, state: AgentState) -> Literal["generate_chart_spec", "persist_analysis_state"]:
+        state["chart_spec"] = {
+            "chart_required": False,
+            "chart_intent": False,
+            "renderer": "recharts",
+            "spec": None,
+            "reason": "La generación de gráficos está deshabilitada.",
+        }
+        return "persist_analysis_state"
 
     def _repair_sql(self, state: AgentState, error: str) -> dict[str, str]:
         repaired = self._sql_generator.repair(
@@ -676,10 +758,15 @@ class AnalyticalAgentNodes:
             self._token(text[index : index + 24])
 
     def _chart_intent(self, state: AgentState) -> bool:
+        if not self._charts_enabled():
+            return False
         plan = (state.get("analytical_context") or {}).get("conversation_plan") or {}
         if isinstance(plan, dict) and plan.get("chart_request") is not None:
             return bool(plan.get("chart_request"))
         return self._has_chart_intent(state.get("question") or "")
+
+    def _charts_enabled(self) -> bool:
+        return env("ANALITRICS_CHARTS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
     def _planner_progress(self, conversation_plan: dict[str, Any]) -> str:
         request_kind = str(conversation_plan.get("request_kind") or "analysis")
@@ -699,7 +786,7 @@ class AnalyticalAgentNodes:
             )
             return f"Detecté una pregunta de seguimiento{suffix}; confianza {confidence}."
         if conversation_plan.get("chart_request"):
-            return f"Detecté una solicitud analítica con visualización; confianza {confidence}."
+            return f"Detecté una solicitud analítica con salida tabular; confianza {confidence}."
         return f"Detecté una pregunta analítica nueva; confianza {confidence}."
 
     def _has_chart_intent(self, question: str) -> bool:
@@ -727,19 +814,195 @@ class AnalyticalAgentNodes:
             return compact
         return compact[:COMPACT_SQL_CHARS].rstrip() + " ..."
 
+    def _data_strategy_for_response(self, state: AgentState) -> dict[str, Any]:
+        data_strategy = (state.get("plan") or {}).get("data_strategy") or {}
+        if not isinstance(data_strategy, dict):
+            return {}
+        return {
+            "mode": data_strategy.get("mode"),
+            "tables_used": (data_strategy.get("tables_used") or [])[:8],
+            "reason": data_strategy.get("reason"),
+            "tables_considered": (data_strategy.get("tables_considered") or [])[:8]
+            if isinstance(data_strategy.get("tables_considered"), list)
+            else None,
+            "tables_used_corrected": data_strategy.get("tables_used_corrected"),
+        }
+
+    def _target_profile_for_metadata_request(
+        self,
+        metadata_request: dict[str, Any],
+        profiles: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        target_filename = str(metadata_request.get("target_filename") or "").lower()
+        target_table = str(metadata_request.get("target_table") or "").lower()
+        candidates = [
+            profile
+            for profile in profiles
+            if (target_filename and str(profile.get("source_filename") or "").lower() == target_filename)
+            or (target_filename and str(profile.get("source_filename") or "").lower().replace(".xlsx", "").replace(".csv", "") == target_filename)
+            or (target_table and str(profile.get("table") or "").lower() == target_table)
+        ]
+        if not candidates:
+            candidates = profiles
+        candidates = [profile for profile in candidates if "metodologia" not in str(profile.get("table") or "").lower()]
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(candidates) > 1:
+            return max(candidates, key=lambda profile: int(profile.get("row_count") or 0))
+        return None
+
+    def _literal_metadata_response(
+        self,
+        conversation_plan: dict[str, Any],
+        profiles: list[dict[str, Any]],
+        workspace: DuckDbWorkspace,
+    ) -> dict[str, Any] | None:
+        if conversation_plan.get("request_kind") != "metadata_literal":
+            return None
+        metadata_request = conversation_plan.get("metadata_request")
+        if not isinstance(metadata_request, dict):
+            metadata_request = {"kind": "catalog"}
+        kind = str(metadata_request.get("kind") or "catalog")
+        data_profiles = [profile for profile in profiles if not profile.get("system_table")]
+        if not data_profiles:
+            return None
+        target = self._target_profile_for_metadata_request(metadata_request, data_profiles)
+        if kind == "columns" and target is not None:
+            rows = [
+                {
+                    "column": column.get("name"),
+                    "type": column.get("type"),
+                    "distinct_count": column.get("distinct_count"),
+                    "null_ratio": column.get("null_ratio"),
+                }
+                for column in target.get("columns") or []
+                if isinstance(column, dict) and column.get("name")
+            ]
+            filename = target.get("source_filename") or "archivo seleccionado"
+            answer = "\n".join(
+                [
+                    f"El archivo **{filename}** contiene {len(rows)} columnas:",
+                    "",
+                    *[f"- {row['column']} ({self._friendly_type(row.get('type'))})" for row in rows],
+                ]
+            )
+            return {
+                "rows": rows,
+                "result_columns": ["column", "type", "distinct_count", "null_ratio"],
+                "answer": answer,
+                "plan": {
+                    "backend": "metadata-literal",
+                    "rationale": "Answered from in-memory profile metadata without LLM.",
+                    "data_strategy": {
+                        "mode": "metadata_columns",
+                        "tables_used": [target.get("table")],
+                        "reason": "Pregunta literal de columnas/campos.",
+                    },
+                },
+            }
+        rows = [
+            {
+                "filename": profile.get("source_filename"),
+                "table_name": profile.get("table"),
+                "row_count": int(profile.get("row_count") or 0),
+                "column_count": len(profile.get("columns") or []),
+            }
+            for profile in data_profiles
+        ]
+        answer = self._literal_catalog_answer(kind, rows, workspace.cache_path)
+        return {
+            "rows": rows,
+            "result_columns": ["filename", "table_name", "row_count", "column_count"],
+            "answer": answer,
+            "plan": {
+                "backend": "metadata-literal",
+                "rationale": "Answered from internal catalog without LLM.",
+                "data_strategy": {
+                    "mode": "metadata_catalog",
+                    "tables_used": ["__analitrics_catalog"],
+                    "reason": "Pregunta literal de metadata estructural.",
+                },
+            },
+        }
+
+    def _literal_catalog_answer(self, kind: str, rows: list[dict[str, Any]], cache_path: Any) -> str:
+        total_rows = sum(int(row.get("row_count") or 0) for row in rows)
+        if kind == "catalog":
+            lines = [
+                f"Hay {len(rows)} tabla(s) activas con {total_rows:,} fila(s) en total:",
+                "",
+            ]
+            lines.extend(
+                f"- {row['table_name']} ({row['filename']}): {row['row_count']:,} filas, {row['column_count']} columnas"
+                for row in rows
+            )
+            return "\n".join(lines)
+        lines = [
+            f"Dataset activo: {len(rows)} tabla(s), {total_rows:,} fila(s) totales.",
+            f"Cache DuckDB: {cache_path}" if cache_path else "Cache DuckDB: no disponible.",
+        ]
+        return "\n".join(lines)
+
+    def _friendly_type(self, value: Any) -> str:
+        text = str(value or "").upper()
+        if "CHAR" in text or "TEXT" in text or "VARCHAR" in text:
+            return "texto"
+        if "TIMESTAMP" in text or "DATE" in text:
+            return "fecha"
+        if any(token in text for token in ("DOUBLE", "FLOAT", "DECIMAL", "NUMERIC", "REAL")):
+            return "decimal"
+        if "INT" in text:
+            return "entero"
+        return str(value or "tipo desconocido")
+
     def _should_skip_critic(self, state: AgentState) -> bool:
         plan = (state.get("analytical_context") or {}).get("conversation_plan") or {}
         if self._chart_intent(state):
             return False
         if state.get("sql_repaired"):
             return False
+        if self._uses_multiple_tables(state):
+            return False
+        if self._has_financial_calculation(state):
+            return False
         if int(state.get("sql_validation_attempt") or 0) != 1:
             return False
-        if not state.get("rows"):
+        if not state.get("rows") and not state.get("result_columns"):
             return False
         if plan.get("confidence") not in {"high", "medium"}:
             return False
         return True
+
+    def _uses_multiple_tables(self, state: AgentState) -> bool:
+        data_strategy = (state.get("plan") or {}).get("data_strategy") or {}
+        tables_used = data_strategy.get("tables_used") if isinstance(data_strategy, dict) else []
+        if isinstance(tables_used, list) and len([table for table in tables_used if table]) > 1:
+            return True
+        mode = str(data_strategy.get("mode") or "") if isinstance(data_strategy, dict) else ""
+        return mode in {"union_compatible_tables", "join_tables"}
+
+    def _has_financial_calculation(self, state: AgentState) -> bool:
+        text = " ".join(
+            str(value or "")
+            for value in [
+                state.get("question"),
+                ((state.get("analytical_context") or {}).get("conversation_plan") or {}).get("effective_question"),
+            ]
+        ).lower()
+        terms = (
+            "ingreso",
+            "ingresos",
+            "venta",
+            "ventas",
+            "monto",
+            "ticket",
+            "facturacion",
+            "facturación",
+            "participacion",
+            "participación",
+            "porcentual",
+        )
+        return any(term in text for term in terms)
 
     def _deterministic_chart_spec(self, state: AgentState) -> dict[str, Any] | None:
         rows = self._rows_for_chart(state)
@@ -760,10 +1023,12 @@ class AnalyticalAgentNodes:
             for key in columns
             if any(isinstance(row.get(key), (int, float)) and not isinstance(row.get(key), bool) for row in rows[:5])
         ]
-        if len(text_columns) != 1 or not numeric_columns:
+        if not text_columns or not numeric_columns:
             return None
-        x_key = text_columns[0]
-        y_key = numeric_columns[0]
+        x_key = self._chart_x_key(text_columns, state)
+        y_keys = self._chart_y_keys(numeric_columns, state)
+        if not x_key or not y_keys:
+            return None
         return {
             "chart_required": True,
             "chart_intent": True,
@@ -772,7 +1037,7 @@ class AnalyticalAgentNodes:
             "spec": {
                 "title": str(plan.get("effective_question") or state.get("question") or "")[:120],
                 "x_key": x_key,
-                "y_keys": [y_key],
+                "y_keys": y_keys,
                 "series": rows,
                 "sort": "preserve",
                 "limit": len(rows),
@@ -782,6 +1047,47 @@ class AnalyticalAgentNodes:
             },
             "reason": "Grafico simple detectado desde columnas resultantes.",
         }
+
+    def _chart_x_key(self, text_columns: list[str], state: AgentState) -> str | None:
+        question = str(state.get("question") or "").lower()
+        priorities = [
+            ("pais", ("pais", "país")),
+            ("producto", ("producto", "curso", "cursos")),
+            ("categoria", ("categoria", "categoría")),
+            ("unidad", ("unidad", "canal")),
+            ("tipo_producto", ("tipo producto", "tipo_producto")),
+        ]
+        for column, terms in priorities:
+            if column in text_columns and any(term in question for term in terms):
+                return column
+        return text_columns[0] if text_columns else None
+
+    def _chart_y_keys(self, numeric_columns: list[str], state: AgentState) -> list[str]:
+        question = str(state.get("question") or "").lower()
+        excluded_terms = ("rank", "ranking", "posicion", "posición", "puesto")
+        candidates = [column for column in numeric_columns if not any(term in column.lower() for term in excluded_terms)]
+        priorities = [
+            (("ingreso", "ingresos", "venta", "ventas", "monto", "total_sales"), ("ingreso", "venta", "monto", "total_sales")),
+            (("alumno", "alumnos", "estudiante", "persona"), ("alumno", "student", "persona")),
+            (("ticket", "promedio"), ("ticket", "avg", "promedio")),
+            (("participacion", "participación", "porcentaje"), ("participacion", "porcentaje", "pct")),
+        ]
+        selected: list[str] = []
+        for question_terms, column_terms in priorities:
+            if not any(term in question for term in question_terms):
+                continue
+            for column in candidates:
+                normalized = column.lower()
+                if column not in selected and any(term in normalized for term in column_terms):
+                    selected.append(column)
+        if not selected and candidates:
+            selected.append(candidates[0])
+        for column in candidates:
+            if len(selected) >= 2:
+                break
+            if column not in selected:
+                selected.append(column)
+        return selected[:2]
 
     def _append_feedback_proposal(self, answer: str, analytical_context: dict[str, Any]) -> str:
         proposal = analytical_context.get("feedback_proposal")

@@ -154,8 +154,20 @@ class AnalyticalAgent:
         graph.add_edge("generate_sql", "validate_sql")
         graph.add_edge("validate_sql", "execute_sql")
         graph.add_edge("execute_sql", "compose_answer")
-        graph.add_edge("compose_answer", "critique_answer")
-        graph.add_edge("critique_answer", "generate_chart_spec")
+        graph.add_conditional_edges(
+            "compose_answer",
+            nodes.route_after_answer,
+            {
+                "critique_answer": "critique_answer",
+                "generate_chart_spec": "generate_chart_spec",
+                "persist_analysis_state": "persist_analysis_state",
+            },
+        )
+        graph.add_conditional_edges(
+            "critique_answer",
+            nodes.route_after_critic,
+            {"generate_chart_spec": "generate_chart_spec", "persist_analysis_state": "persist_analysis_state"},
+        )
         graph.add_edge("generate_chart_spec", "persist_analysis_state")
         graph.add_edge("persist_analysis_state", END)
         return graph.compile()

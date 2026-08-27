@@ -49,7 +49,8 @@ class FileResolver:
         seen: set[str] = set()
         for file_id in file_ids:
             metadata = resolve_file(
-                argparse.Namespace(file_id=file_id, filename=None, tenant_id=request.tenant_id, user_id=request.user_id)
+                argparse.Namespace(file_id=file_id, filename=None, tenant_id=request.tenant_id, user_id=request.user_id),
+                database=self.database,
             )
             if metadata.file_id not in seen:
                 files.append(metadata)
@@ -57,7 +58,8 @@ class FileResolver:
 
         for filename in filenames:
             metadata = resolve_file(
-                argparse.Namespace(file_id=None, filename=filename, tenant_id=request.tenant_id, user_id=request.user_id)
+                argparse.Namespace(file_id=None, filename=filename, tenant_id=request.tenant_id, user_id=request.user_id),
+                database=self.database,
             )
             if metadata.file_id not in seen:
                 files.append(metadata)

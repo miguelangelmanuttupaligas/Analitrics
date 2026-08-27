@@ -4,6 +4,7 @@ import re
 import unicodedata
 from typing import Any
 
+from .analytical_context import AnalyticalContextPromptCompactor
 from .config import bool_env, env
 from .llm_client import JsonLlmClient
 from .prompts import ANALYSIS_STATE_SYSTEM_PROMPT
@@ -207,6 +208,7 @@ class AnalysisStateBuilder:
         self._filter_extractor = filter_extractor or FilterExtractor()
         self._dataset_builder = dataset_builder or DatasetStateBuilder()
         self._answer_summarizer = answer_summarizer or AnswerSummarizer()
+        self._context_compactor = AnalyticalContextPromptCompactor()
 
     def build(self, request: Any, state: dict[str, Any]) -> dict[str, Any] | None:
         sql = str(state.get("sql") or "").strip()
@@ -289,6 +291,7 @@ class AnalysisStateBuilder:
             "plan": state.get("plan") or {},
             "critic": state.get("critic") or {},
             "semantic_extractor": "llm" if semantic else "fast",
+            "semantic_cache": self._semantic_cache(state),
         }
         return analysis_state
 
@@ -319,7 +322,7 @@ class AnalysisStateBuilder:
                         profiles,
                         state.get("catalog_feedback") or [],
                     ),
-                    "analytical_context": state.get("analytical_context") or {},
+                    "analytical_context": self._context_compactor.for_sql_tools(state.get("analytical_context") or {}),
                 },
                 model_env="ANALITRICS_ANALYSIS_STATE_MODEL",
                 default_model=env("ANALITRICS_DEFAULT_MODEL", "gpt-5.5"),
@@ -356,3 +359,19 @@ class AnalysisStateBuilder:
         merged.setdefault("primary_file", fallback.get("primary_file"))
         merged.setdefault("primary_table", fallback.get("primary_table"))
         return merged
+
+    def _semantic_cache(self, state: dict[str, Any]) -> dict[str, Any]:
+        plan = state.get("plan") or {}
+        data_strategy = plan.get("data_strategy") if isinstance(plan, dict) else {}
+        cache = {
+            "data_strategy": data_strategy if isinstance(data_strategy, dict) else {},
+        }
+        embedded = cache["data_strategy"].get("semantic_cache") if isinstance(cache["data_strategy"], dict) else None
+        if isinstance(embedded, dict):
+            cache.update(embedded)
+            cache["data_strategy"] = {
+                key: value
+                for key, value in cache["data_strategy"].items()
+                if key != "semantic_cache"
+            }
+        return {key: value for key, value in cache.items() if value not in (None, [], {})}

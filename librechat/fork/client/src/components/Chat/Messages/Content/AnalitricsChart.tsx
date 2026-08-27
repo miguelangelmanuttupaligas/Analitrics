@@ -3,7 +3,9 @@ import type { ReactNode } from 'react';
 
 type ChartPoint = {
   label: string;
-  value: number;
+  group?: string | null;
+  value?: number;
+  [key: string]: string | number | null | undefined;
 };
 
 type ChartPayload = {
@@ -12,17 +14,21 @@ type ChartPayload = {
   title?: string;
   category_field?: string;
   value_field?: string;
+  y_keys?: string[];
+  group_field?: string | null;
   points?: ChartPoint[];
 };
 
 type SortMode = 'original' | 'desc' | 'asc';
 
 type TooltipState = {
-  label: string;
-  value: number;
+  point: ChartPoint;
+  metric: string;
   x: number;
   y: number;
 } | null;
+
+const colors = ['#22c55e', '#38bdf8', '#f59e0b', '#a78bfa'];
 
 const numberFormat = new Intl.NumberFormat('es-PE', {
   maximumFractionDigits: 0,
@@ -40,14 +46,26 @@ const parsePayload = (output?: string | null): ChartPayload | null => {
   }
 };
 
+const isFiniteNumber = (value: unknown): value is number => {
+  const number = Number(value);
+  return Number.isFinite(number);
+};
+
+const metricLabel = (metric: string) =>
+  metric
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .replace('Total Sales', 'Ventas')
+    .replace('Unique Students', 'Alumnos');
+
 const normalizePoints = (points?: ChartPoint[]) =>
   (Array.isArray(points) ? points : [])
     .map((point) => ({
+      ...point,
       label: String(point?.label ?? ''),
-      value: Number(point?.value ?? 0),
     }))
-    .filter((point) => point.label && Number.isFinite(point.value))
-    .slice(0, 10);
+    .filter((point) => point.label)
+    .slice(0, 12);
 
 function EmptyChart() {
   return (
@@ -57,17 +75,17 @@ function EmptyChart() {
   );
 }
 
-function sortPoints(points: ChartPoint[], sortMode: SortMode) {
+function sortPoints(points: ChartPoint[], sortMode: SortMode, metric: string) {
   if (sortMode === 'desc') {
-    return [...points].sort((a, b) => b.value - a.value);
+    return [...points].sort((a, b) => Number(b[metric] ?? 0) - Number(a[metric] ?? 0));
   }
   if (sortMode === 'asc') {
-    return [...points].sort((a, b) => a.value - b.value);
+    return [...points].sort((a, b) => Number(a[metric] ?? 0) - Number(b[metric] ?? 0));
   }
   return points;
 }
 
-function ChartTooltip({ tooltip }: { tooltip: TooltipState }) {
+function ChartTooltip({ tooltip, metrics }: { tooltip: TooltipState; metrics: string[] }) {
   if (!tooltip) {
     return null;
   }
@@ -76,27 +94,38 @@ function ChartTooltip({ tooltip }: { tooltip: TooltipState }) {
       className="pointer-events-none absolute z-10 rounded-md border border-border-light bg-surface-primary px-2.5 py-2 text-xs shadow-lg"
       style={{ left: tooltip.x + 12, top: tooltip.y + 12 }}
     >
-      <div className="max-w-64 truncate font-medium text-text-primary">{tooltip.label}</div>
-      <div className="mt-0.5 tabular-nums text-text-secondary">{numberFormat.format(tooltip.value)}</div>
+      <div className="max-w-72 truncate font-medium text-text-primary">{tooltip.point.label}</div>
+      <div className="mt-1 space-y-0.5">
+        {metrics.map((metric) => (
+          <div key={metric} className="flex justify-between gap-4 tabular-nums text-text-secondary">
+            <span>{metricLabel(metric)}</span>
+            <span>{numberFormat.format(Number(tooltip.point[metric] ?? 0))}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
 function ChartShell({
   title,
-  valueLabel,
+  metrics,
+  selectedMetric,
   sortMode,
   zoom,
   tooltip,
+  onMetricChange,
   onSortChange,
   onZoomChange,
   children,
 }: {
   title: string;
-  valueLabel: string;
+  metrics: string[];
+  selectedMetric: string;
   sortMode: SortMode;
   zoom: number;
   tooltip: TooltipState;
+  onMetricChange: (metric: string) => void;
   onSortChange: (sortMode: SortMode) => void;
   onZoomChange: (zoom: number) => void;
   children: ReactNode;
@@ -104,11 +133,29 @@ function ChartShell({
   return (
     <div className="relative my-3 rounded-lg border border-border-light bg-surface-primary p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="text-sm font-medium text-text-primary">{title}</div>
-          <div className="text-xs text-text-secondary">{valueLabel}</div>
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium text-text-primary">{title}</div>
+          <div className="text-xs text-text-secondary">
+            {metrics.length > 1 ? 'Selecciona la métrica para comparar.' : metricLabel(selectedMetric)}
+          </div>
         </div>
-        <div className="flex items-center gap-2 text-xs text-text-secondary">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
+          {metrics.length > 1 && (
+            <label className="flex items-center gap-1">
+              <span>Métrica</span>
+              <select
+                className="rounded-md border border-border-light bg-surface-secondary px-2 py-1 text-text-primary outline-none"
+                value={selectedMetric}
+                onChange={(event) => onMetricChange(event.target.value)}
+              >
+                {metrics.map((metric) => (
+                  <option key={metric} value={metric}>
+                    {metricLabel(metric)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label className="flex items-center gap-1">
             <span>Orden</span>
             <select
@@ -136,44 +183,56 @@ function ChartShell({
         </div>
       </div>
       {children}
-      <ChartTooltip tooltip={tooltip} />
+      <ChartTooltip tooltip={tooltip} metrics={metrics} />
     </div>
   );
 }
 
 function BarChart({
   points,
+  metrics,
+  selectedMetric,
   zoom,
   onTooltip,
 }: {
   points: ChartPoint[];
+  metrics: string[];
+  selectedMetric: string;
   zoom: number;
   onTooltip: (tooltip: TooltipState) => void;
 }) {
-  const max = Math.max(...points.map((point) => point.value), 1);
+  const max = Math.max(...points.map((point) => Number(point[selectedMetric] ?? 0)), 1);
 
   return (
     <div className="overflow-x-auto pb-1">
       <div className="space-y-2" style={{ minWidth: `${zoom * 100}%` }}>
         {points.map((point, index) => {
-          const width = Math.max((point.value / max) * 100, 2);
+          const value = Number(point[selectedMetric] ?? 0);
+          const width = Math.max((value / max) * 100, 2);
           return (
             <div
               key={`${point.label}-${index}`}
-              className="grid grid-cols-[minmax(8rem,15rem)_1fr_auto] items-center gap-3"
+              className="grid grid-cols-[minmax(10rem,18rem)_1fr_auto] items-center gap-3"
               onMouseLeave={() => onTooltip(null)}
             >
-              <div className="truncate text-xs text-text-secondary" title={point.label}>
-                {point.label}
+              <div className="min-w-0">
+                <div className="truncate text-xs text-text-primary" title={point.label}>
+                  {point.label}
+                </div>
+                {point.group && (
+                  <div className="truncate text-[11px] text-text-secondary" title={String(point.group)}>
+                    {point.group}
+                  </div>
+                )}
               </div>
               <div className="h-5 overflow-hidden rounded bg-surface-secondary">
                 <div
-                  className="h-full rounded bg-green-500 transition-[width]"
-                  style={{ width: `${width}%` }}
+                  className="h-full rounded transition-[width]"
+                  style={{ width: `${width}%`, backgroundColor: colors[metrics.indexOf(selectedMetric) % colors.length] }}
                   onMouseMove={(event) =>
                     onTooltip({
-                      label: point.label,
-                      value: point.value,
+                      point,
+                      metric: selectedMetric,
                       x: event.nativeEvent.offsetX + event.currentTarget.offsetLeft,
                       y: event.currentTarget.offsetTop,
                     })
@@ -181,7 +240,7 @@ function BarChart({
                 />
               </div>
               <div className="min-w-16 text-right text-xs tabular-nums text-text-primary">
-                {numberFormat.format(point.value)}
+                {numberFormat.format(value)}
               </div>
             </div>
           );
@@ -193,10 +252,12 @@ function BarChart({
 
 function LineChart({
   points,
+  selectedMetric,
   zoom,
   onTooltip,
 }: {
   points: ChartPoint[];
+  selectedMetric: string;
   zoom: number;
   onTooltip: (tooltip: TooltipState) => void;
 }) {
@@ -204,15 +265,15 @@ function LineChart({
   const height = 280;
   const padX = 44;
   const padY = 34;
-  const max = Math.max(...points.map((point) => point.value), 1);
-  const min = Math.min(...points.map((point) => point.value), 0);
+  const max = Math.max(...points.map((point) => Number(point[selectedMetric] ?? 0)), 1);
+  const min = Math.min(...points.map((point) => Number(point[selectedMetric] ?? 0)), 0);
   const range = Math.max(max - min, 1);
   const chartWidth = width - padX * 2;
   const chartHeight = height - padY * 2;
   const coords = points.map((point, index) => ({
     ...point,
     x: padX + (index / Math.max(points.length - 1, 1)) * chartWidth,
-    y: height - padY - ((point.value - min) / range) * chartHeight,
+    y: height - padY - ((Number(point[selectedMetric] ?? 0) - min) / range) * chartHeight,
   }));
   const polyline = coords.map((point) => `${point.x},${point.y}`).join(' ');
 
@@ -238,14 +299,14 @@ function LineChart({
               className="fill-green-500"
               onMouseMove={(event) =>
                 onTooltip({
-                  label: point.label,
-                  value: point.value,
+                  point,
+                  metric: selectedMetric,
                   x: event.nativeEvent.offsetX,
                   y: event.nativeEvent.offsetY,
                 })
               }
             />
-            <title>{`${point.label}: ${numberFormat.format(point.value)}`}</title>
+            <title>{`${point.label}: ${numberFormat.format(Number(point[selectedMetric] ?? 0))}`}</title>
           </g>
         ))}
       </svg>
@@ -263,32 +324,49 @@ function LineChart({
 export default function AnalitricsChart({ output }: { output?: string | null }) {
   const payload = parsePayload(output);
   const rawPoints = normalizePoints(payload?.points);
+  const metrics = useMemo(() => {
+    const explicit = Array.isArray(payload?.y_keys) ? payload.y_keys : [];
+    const fallback = payload?.value_field ? [payload.value_field] : ['value'];
+    return (explicit.length > 0 ? explicit : fallback).filter((metric) =>
+      rawPoints.some((point) => isFiniteNumber(point[metric])),
+    );
+  }, [payload?.value_field, payload?.y_keys, rawPoints]);
   const [sortMode, setSortMode] = useState<SortMode>('original');
   const [zoom, setZoom] = useState(1);
   const [tooltip, setTooltip] = useState<TooltipState>(null);
-  const points = useMemo(() => sortPoints(rawPoints, sortMode), [rawPoints, sortMode]);
+  const [selectedMetric, setSelectedMetric] = useState(metrics[0] ?? 'value');
+  const effectiveMetric = metrics.includes(selectedMetric) ? selectedMetric : metrics[0];
+  const points = useMemo(
+    () => sortPoints(rawPoints, sortMode, effectiveMetric ?? 'value'),
+    [rawPoints, sortMode, effectiveMetric],
+  );
 
-  if (!payload?.chart_required || points.length === 0) {
+  if (!payload?.chart_required || points.length === 0 || !effectiveMetric) {
     return <EmptyChart />;
   }
 
-  const title = payload.title || 'Gráfico';
-  const valueLabel = payload.value_field || 'valor';
-
   return (
     <ChartShell
-      title={title}
-      valueLabel={valueLabel}
+      title={payload.title || 'Gráfico'}
+      metrics={metrics}
+      selectedMetric={effectiveMetric}
       sortMode={sortMode}
       zoom={zoom}
       tooltip={tooltip}
+      onMetricChange={setSelectedMetric}
       onSortChange={setSortMode}
       onZoomChange={setZoom}
     >
       {payload.chart_type === 'line' ? (
-        <LineChart points={points} zoom={zoom} onTooltip={setTooltip} />
+        <LineChart points={points} selectedMetric={effectiveMetric} zoom={zoom} onTooltip={setTooltip} />
       ) : (
-        <BarChart points={points} zoom={zoom} onTooltip={setTooltip} />
+        <BarChart
+          points={points}
+          metrics={metrics}
+          selectedMetric={effectiveMetric}
+          zoom={zoom}
+          onTooltip={setTooltip}
+        />
       )}
     </ChartShell>
   );

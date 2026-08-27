@@ -8,6 +8,7 @@ from typing import Any
 MAX_RECENT_MESSAGES = 8
 MAX_MESSAGE_TEXT = 700
 MAX_RECENT_STATES = 8
+MAX_SQL_TOOL_STATES = 5
 MAX_CONTEXT_TABLES = 8
 MAX_CONTEXT_COLUMNS = 18
 
@@ -282,6 +283,77 @@ class AnalysisStateCompactor:
             "confidence": proposal.get("confidence"),
         }
 
+    def _compact_semantic_cache(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        cache = {
+            "data_strategy": self._compact_data_strategy(value.get("data_strategy")),
+            "compatible_groups": self._compact_compatible_groups(value.get("compatible_groups")),
+            "described_tables": self._compact_described_tables(value.get("described_tables")),
+            "catalog_terms": self._compact_catalog_terms(value.get("catalog_terms")),
+        }
+        return {key: item for key, item in cache.items() if item not in (None, [], {})} or None
+
+    def _compact_data_strategy(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        return {
+            "mode": value.get("mode"),
+            "tables_used": [str(table) for table in (value.get("tables_used") or [])[:8] if table],
+            "reason": self._trim(value.get("reason"), 180),
+        }
+
+    def _compact_compatible_groups(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        return [
+            {
+                "shared_columns": (group.get("shared_columns") or [])[:12],
+                "tables": [
+                    {
+                        "table": table.get("table"),
+                        "source_filename": table.get("source_filename"),
+                        "row_count": table.get("row_count"),
+                    }
+                    for table in (group.get("tables") or [])[:8]
+                    if isinstance(table, dict)
+                ],
+            }
+            for group in value[:4]
+            if isinstance(group, dict)
+        ]
+
+    def _compact_described_tables(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        return [
+            {
+                "table": item.get("table"),
+                "source_filename": item.get("source_filename"),
+                "row_count": item.get("row_count"),
+                "columns": [
+                    {"name": column.get("name"), "type": column.get("type")}
+                    for column in (item.get("columns") or [])[:18]
+                    if isinstance(column, dict)
+                ],
+            }
+            for item in value[:6]
+            if isinstance(item, dict)
+        ]
+
+    def _compact_catalog_terms(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        return [
+            {
+                "term": item.get("term"),
+                "resolved": item.get("resolved"),
+                "definitions": (item.get("definitions") or [])[:3],
+            }
+            for item in value[:8]
+            if isinstance(item, dict)
+        ]
+
     def _trim(self, value: Any, limit: int) -> str | None:
         if value is None:
             return None
@@ -335,6 +407,7 @@ class AnalyticalContextBuilder:
             "last_chart": self._last_state_chart(recent_states) or last_chart,
             "last_context": last_context_output[:2200] if last_context_output else None,
             "dataset_context": self._dataset_selector.select(files or [], profiles or []),
+            "semantic_cache": self._latest_semantic_cache(analysis_states),
             "recent_messages": self._message_compactor.compact(history),
             "feedback_proposal": None,
             "context_policy": {
@@ -365,6 +438,15 @@ class AnalyticalContextBuilder:
         for state in reversed(states):
             if isinstance(state.get("last_chart"), dict):
                 return state.get("last_chart")
+        return None
+
+    def _latest_semantic_cache(self, states: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+        for state in reversed(states or []):
+            if not isinstance(state, dict):
+                continue
+            cache = (state.get("state") or {}).get("semantic_cache")
+            if isinstance(cache, dict) and cache:
+                return self._state_compactor._compact_semantic_cache(cache)
         return None
 
 
@@ -398,8 +480,8 @@ class AnalyticalContextPromptCompactor:
         return {
             "current_question": analytical_context.get("current_question"),
             "effective_question": analytical_context.get("effective_question"),
-            "pending_clarification": analytical_context.get("pending_clarification"),
-            "previous_analysis_states": analytical_context.get("previous_analysis_states") or [],
+            "pending_clarification": self._compact_pending_clarification(analytical_context.get("pending_clarification")),
+            "previous_analysis_states": (analytical_context.get("previous_analysis_states") or [])[-MAX_SQL_TOOL_STATES:],
             "recent_messages": analytical_context.get("recent_messages") or [],
             "conversation_plan": analytical_context.get("conversation_plan"),
             "selected_analysis_state": self._compact_selected_state(analytical_context.get("selected_analysis_state")),
@@ -408,13 +490,14 @@ class AnalyticalContextPromptCompactor:
             "last_chart": self._compact_chart(analytical_context.get("last_chart")),
             "feedback_proposal": self._compact_feedback_proposal(analytical_context.get("feedback_proposal")),
             "applied_feedback": self._compact_feedback_proposal(analytical_context.get("applied_feedback")),
+            "semantic_cache": self._semantic_cache(analytical_context),
         }
 
     def _conversation_context(self, analytical_context: dict[str, Any]) -> dict[str, Any]:
         return {
             "current_question": analytical_context.get("current_question"),
             "effective_question": analytical_context.get("effective_question"),
-            "pending_clarification": analytical_context.get("pending_clarification"),
+            "pending_clarification": self._compact_pending_clarification(analytical_context.get("pending_clarification")),
             "previous_analysis_states": analytical_context.get("previous_analysis_states") or [],
             "selected_analysis_state": self._compact_selected_state(analytical_context.get("selected_analysis_state")),
             "last_sql": self._compact_sql_artifact(analytical_context.get("last_sql")),
@@ -423,6 +506,22 @@ class AnalyticalContextPromptCompactor:
             "last_context": self._trim(analytical_context.get("last_context"), 500),
             "recent_messages": analytical_context.get("recent_messages") or [],
             "context_policy": analytical_context.get("context_policy"),
+        }
+
+    def _compact_pending_clarification(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict) or not value.get("pending"):
+            return None
+        candidates = value.get("candidate_states") or []
+        return {
+            "pending": True,
+            "original_question": self._trim(value.get("original_question"), 300),
+            "clarification_question": self._trim(value.get("clarification_question"), 300),
+            "reason": self._trim(value.get("reason"), 220),
+            "candidate_state_ids": [
+                state.get("state_id")
+                for state in candidates[:5]
+                if isinstance(state, dict) and state.get("state_id") is not None
+            ],
         }
 
     def _compact_sql_artifact(self, value: Any) -> dict[str, Any] | None:
@@ -515,6 +614,102 @@ class AnalyticalContextPromptCompactor:
             "assumptions": (state.get("assumptions") or [])[:3] if isinstance(state.get("assumptions"), list) else [],
             "feedback_proposal": self._compact_feedback_proposal(state.get("feedback_proposal")),
         }
+
+    def _semantic_cache(self, analytical_context: dict[str, Any]) -> dict[str, Any] | None:
+        current_cache = self._compact_semantic_cache(analytical_context.get("semantic_cache"))
+        if current_cache:
+            return current_cache
+        selected = analytical_context.get("selected_analysis_state")
+        if isinstance(selected, dict):
+            selected_cache = ((selected.get("state") or {}).get("semantic_cache"))
+            compacted = self._compact_semantic_cache(selected_cache)
+            if compacted:
+                return compacted
+        states = analytical_context.get("previous_analysis_states") or []
+        for state in reversed(states):
+            if not isinstance(state, dict):
+                continue
+            compacted = self._compact_semantic_cache((state.get("state") or {}).get("semantic_cache"))
+            if compacted:
+                return compacted
+        return None
+
+    def _compact_semantic_cache(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        cache = {
+            "data_strategy": self._compact_data_strategy(value.get("data_strategy")),
+            "compatible_groups": self._compact_compatible_groups(value.get("compatible_groups")),
+            "described_tables": self._compact_described_tables(value.get("described_tables")),
+            "catalog_terms": self._compact_catalog_terms(value.get("catalog_terms")),
+        }
+        return {key: item for key, item in cache.items() if item not in (None, [], {})} or None
+
+    def _compact_data_strategy(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        return {
+            "mode": value.get("mode"),
+            "tables_used": [str(table) for table in (value.get("tables_used") or [])[:8] if table],
+            "reason": self._trim(value.get("reason"), 180),
+        }
+
+    def _compact_compatible_groups(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        groups: list[dict[str, Any]] = []
+        for group in value[:4]:
+            if not isinstance(group, dict):
+                continue
+            groups.append(
+                {
+                    "shared_columns": (group.get("shared_columns") or [])[:12],
+                    "tables": [
+                        {
+                            "table": table.get("table"),
+                            "source_filename": table.get("source_filename"),
+                            "row_count": table.get("row_count"),
+                        }
+                        for table in (group.get("tables") or [])[:8]
+                        if isinstance(table, dict)
+                    ],
+                }
+            )
+        return groups
+
+    def _compact_described_tables(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        return [
+            {
+                "table": item.get("table"),
+                "source_filename": item.get("source_filename"),
+                "row_count": item.get("row_count"),
+                "columns": [
+                    {
+                        "name": column.get("name"),
+                        "type": column.get("type"),
+                    }
+                    for column in (item.get("columns") or [])[:18]
+                    if isinstance(column, dict)
+                ],
+            }
+            for item in value[:6]
+            if isinstance(item, dict)
+        ]
+
+    def _compact_catalog_terms(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        return [
+            {
+                "term": item.get("term"),
+                "resolved": item.get("resolved"),
+                "definitions": (item.get("definitions") or [])[:3],
+            }
+            for item in value[:8]
+            if isinstance(item, dict)
+        ]
 
     def _compact_chart(self, chart: Any) -> dict[str, Any] | None:
         if not isinstance(chart, dict):
