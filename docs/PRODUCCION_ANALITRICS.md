@@ -185,7 +185,7 @@ make control-plane-grants
 make librechat up
 ```
 
-`make control-plane-migrate` ejecuta `alembic upgrade head` desde una imagen efimera. No modifica el esquema desde el contenedor del agente durante una conversacion. `make control-plane-grants` mantiene al usuario de runtime sin permisos DDL, por lo que el agente no puede alterar tablas, catalogos ni migraciones.
+`make control-plane-migrate` ejecuta `alembic upgrade head` desde una imagen efimera. No modifica el esquema desde el contenedor del agente durante una conversacion. `make control-plane-grants` mantiene al usuario de runtime sin permisos DDL, por lo que el agente no puede alterar tablas, catalogos ni migraciones. `make librechat up` lo invoca siempre despues de levantar el control plane para sincronizar la contrasena de `analitrics_runtime` con el `.env` activo.
 
 Antes de aplicar una migracion relevante, revisar las revisiones entrantes y respaldar el Postgres de control plane:
 
