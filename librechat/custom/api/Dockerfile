@@ -60,6 +60,8 @@ RUN node --check /tmp/analitrics-fork/api/routes/analitrics.js \
   && node /tmp/analitrics-fork/patches/install-analitrics-route.js
 RUN node /tmp/analitrics-fork/patches/conversation-cleanup.js
 RUN node /tmp/analitrics-fork/patches/direct-agent-controller.js
+RUN node /tmp/analitrics-fork/patches/openid-tenant.js \
+  && node --check /app/api/strategies/openidStrategy.js
 
 EXPOSE 3080
 ENV HOST=0.0.0.0

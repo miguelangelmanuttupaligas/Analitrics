@@ -47,6 +47,7 @@ Estos cambios se aplican desde `api/Dockerfile`, pero su codigo vive en `fork/pa
 - `conversation-cleanup.js`: notifica a `analytics-agent` cuando LibreChat elimina una conversacion.
 - `direct-agent-controller.js`: fuerza el flujo Analitrics como controlador principal del endpoint `agents`.
 - `install-analitrics-route.js`: registra `/api/analitrics/*` dentro del server de LibreChat.
+- `openid-tenant.js`: exige el claim OIDC configurado por `OPENID_TENANT_ID_CLAIM` y lo persiste en el usuario de LibreChat. Asi, las cargas S3 nuevas usan `t/<tenantId>/uploads/<userId>/...`.
 
 El `api/Dockerfile` debe mantenerse como ensamblador: compilar `librechat/fork`, copiar `custom/fork/` y ejecutar parches backend. No debe acumular logica larga inline.
 
