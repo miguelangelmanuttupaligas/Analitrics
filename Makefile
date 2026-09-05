@@ -196,7 +196,11 @@ prepare-dirs:
 	if [[ "$$(stat -c '%u:%g' /var/analitrics/storage/logs)" != "10001:10001" ]]; then \
 		sudo chown -R 10001:10001 /var/analitrics/storage/logs; \
 	fi; \
-	local_owner="$$(id -u):$$(id -g)"; \
+		# Containers run as the UID/GID configured for LibreChat, not as the user invoking make. \
+		app_env_file="librechat/custom/.env"; \
+		configured_uid="$$(awk -F= '$$1 == "UID" && $$2 ~ /^[0-9]+$$/ { print $$2; exit }' "$$app_env_file" 2>/dev/null || true)"; \
+		configured_gid="$$(awk -F= '$$1 == "GID" && $$2 ~ /^[0-9]+$$/ { print $$2; exit }' "$$app_env_file" 2>/dev/null || true)"; \
+		local_owner="$${configured_uid:-1000}:$${configured_gid:-1000}"; \
 	for dir in /var/analitrics/librechat/{uploads,logs,skill,data,images,certs} /var/analitrics/analytics/cache; do \
 		if [[ "$$(stat -c '%u:%g' "$$dir")" != "$$local_owner" ]]; then \
 			sudo chown -R "$$local_owner" "$$dir"; \

@@ -71,7 +71,17 @@ Esta VM ya tiene Nginx compartido para otros dominios. Ese Nginx conserva los pu
 /etc/letsencrypt/live/analitrics.com/privkey.pem
 ```
 
-El gateway Docker de Analitrics no usa TLS ni certificados en producción. Solo escucha en `127.0.0.1:3090`; Nginx del host hace proxy HTTP hacia ese puerto y termina TLS públicamente.
+El gateway Docker recibe tráfico de la aplicación solo en `127.0.0.1:3090`; Nginx del host hace proxy HTTP hacia ese puerto y termina TLS públicamente. El gateway además conserva `127.0.0.1:3443` con TLS interno para que LibreChat pueda descubrir el issuer OIDC `https://analitrics.com/auth/...` sin salir de Docker. Ese segundo puerto nunca se publica a Internet.
+
+Copiar el certificado existente también al volumen del gateway interno:
+
+```bash
+make prepare-dirs
+sudo install -m 644 /etc/letsencrypt/live/analitrics.com/fullchain.pem \
+  /var/analitrics/librechat/certs/analitrics.crt
+sudo install -m 600 /etc/letsencrypt/live/analitrics.com/privkey.pem \
+  /var/analitrics/librechat/certs/analitrics.key
+```
 
 El site versionado está en [analitrics.com.conf](../deploy/nginx/analitrics.com.conf). Antes de cambiarlo, conservar una copia fuera de `sites-enabled`:
 
@@ -89,7 +99,36 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-No se debe detener Nginx, copiar certificados a Docker ni crear hooks de Certbot. La renovación existente de Certbot continúa siendo responsabilidad del Nginx del host.
+No se debe detener Nginx. Certbot y la renovación pública siguen siendo responsabilidad del Nginx del host. Como el gateway interno usa una copia de ese certificado para el discovery OIDC, instalar este hook una vez para sincronizarla después de cada renovación exitosa:
+
+```bash
+sudo install -d -m 755 /etc/letsencrypt/renewal-hooks/deploy
+sudo tee /etc/letsencrypt/renewal-hooks/deploy/analitrics-gateway-cert.sh >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+domain="analitrics.com"
+cert_dir="/etc/letsencrypt/live/${domain}"
+target_dir="/var/analitrics/librechat/certs"
+
+install -m 644 "${cert_dir}/fullchain.pem" "${target_dir}/analitrics.crt"
+install -m 600 "${cert_dir}/privkey.pem" "${target_dir}/analitrics.key"
+
+systemctl reload nginx
+docker restart analitrics-analitrics-gateway
+EOF
+sudo chmod 700 /etc/letsencrypt/renewal-hooks/deploy/analitrics-gateway-cert.sh
+```
+
+Se puede probar el hook sin renovar el certificado:
+
+```bash
+sudo /etc/letsencrypt/renewal-hooks/deploy/analitrics-gateway-cert.sh
+curl --resolve analitrics.com:3443:127.0.0.1 \
+  -I https://analitrics.com:3443/auth/realms/analitrics/.well-known/openid-configuration
+```
+
+No ejecutar `certbot renew --dry-run --run-deploy-hooks`: podría sincronizar un certificado de staging con el gateway interno.
 
 ## Primer arranque
 
@@ -120,6 +159,50 @@ make librechat up
 ```
 
 `make librechat up` prepara directorios, red Docker, storage, MongoDB, Postgres de control plane, agente analitico, gateway y LibreChat.
+
+## Migraciones del Control Plane
+
+El control plane es el Postgres de Analitrics que conserva catalogos, feedback, estados analiticos y dashboards. Su esquema se versiona mediante Alembic en `analitrics-app/migrations/`.
+
+Ejecutar una migracion solo cuando el `git pull` traiga una nueva revision dentro de esa carpeta. No se debe ejecutar antes de cada despliegue si no hay cambios de esquema.
+
+En una actualizacion con migraciones:
+
+```bash
+cd /opt/Analitrics
+git pull --ff-only origin master
+
+# Asegura que control-postgres este disponible.
+make librechat up
+
+# Aplica todas las revisiones pendientes con el usuario administrador del control plane.
+make control-plane-migrate
+
+# Reafirma los permisos de solo lectura del usuario de runtime.
+make control-plane-grants
+
+# Recrea los servicios si el cambio tambien actualizo imagenes o configuracion.
+make librechat up
+```
+
+`make control-plane-migrate` ejecuta `alembic upgrade head` desde una imagen efimera. No modifica el esquema desde el contenedor del agente durante una conversacion. `make control-plane-grants` mantiene al usuario de runtime sin permisos DDL, por lo que el agente no puede alterar tablas, catalogos ni migraciones.
+
+Antes de aplicar una migracion relevante, revisar las revisiones entrantes y respaldar el Postgres de control plane:
+
+```bash
+git fetch origin
+git diff --name-only HEAD..origin/master -- analitrics-app/migrations/
+
+set -a
+source <(grep -v '^UID=' librechat/custom/.env)
+set +a
+docker exec -e PGPASSWORD="$ANALITRICS_POSTGRES_ADMIN_PASSWORD" \
+  analitrics-analitrics-control-postgres \
+  pg_dump -U "$ANALITRICS_POSTGRES_ADMIN_USER" "$ANALITRICS_POSTGRES_DB" \
+  > /root/analitrics-control-plane-$(date +%F-%H%M%S).sql
+```
+
+Nunca incluir el backup ni los secretos en Git.
 
 ## Reemplazo del MVP antiguo
 
