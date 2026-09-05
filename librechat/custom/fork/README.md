@@ -59,6 +59,8 @@ Mientras el MVP use el tenant unico `analitrics`, `make librechat up` tambien co
 
 Ese principal no es un usuario operativo: usa `provider: system`, no tiene contrasena ni identidad OpenID, no es administrador y no existe en Keycloak. Su unica responsabilidad es ser el autor tecnico y propietario ACL del agente unico. Los usuarios reales solo reciben permiso de uso; no pueden crear, modificar ni compartir agentes.
 
+El permiso tecnico `AGENTS.USE` se conserva porque LibreChat lo exige en el endpoint de chat. No habilita el builder: `endpoints.agents.disableBuilder: true` elimina su interfaz nativa y el resto de permisos de agentes, skills, MCP, prompts, codigo y busqueda quedan bloqueados para `USER` y `ADMIN`.
+
 El soporte de admin panel bajo `/admin` ya existe en el fork fuente de LibreChat mediante `packages/api/src/auth/exchange.ts`; no se parchea post-build.
 
 ## UI Analitrics
