@@ -32,7 +32,7 @@ up down:
 				app_owner="$${configured_uid:-1000}:$${configured_gid:-1000}"; \
 				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" build; \
 				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" run --rm --no-deps --user 0:0 -e ANALITRICS_APP_OWNER="$$app_owner" --entrypoint sh api -ec 'chown -R "$$ANALITRICS_APP_OWNER" /app/uploads /app/logs /app/skill /app/data /app/client/public/images'; \
-				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" run --rm --no-deps --user 0:0 -e ANALITRICS_APP_OWNER="$$app_owner" --entrypoint sh analytics-agent -ec 'chown -R "$$ANALITRICS_APP_OWNER" /var/analitrics/analytics/cache'; \
+				docker run --rm --user 0:0 --entrypoint sh -e ANALITRICS_APP_OWNER="$$app_owner" -v volume-analitrics-analytics-cache:/var/analitrics/analytics analitrics-app:local -ec 'chown -R "$$ANALITRICS_APP_OWNER" /var/analitrics/analytics/cache'; \
 				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" up -d --no-build --remove-orphans; \
 			else \
 				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" up -d --remove-orphans; \
