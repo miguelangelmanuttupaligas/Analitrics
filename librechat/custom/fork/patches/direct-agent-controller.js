@@ -574,7 +574,7 @@ async function runAnalitricsDirectController(req, res, initializeClient, addTitl
     // LibreChat appends THINK deltas into a single content part. Delimit each
     // status here so separate analytical stages never run into one another.
     const prefixedMessage =
-      emittedReasoningStatusCount++ === 0 ? displayMessage : `\n${displayMessage}`;
+      emittedReasoningStatusCount++ === 0 ? displayMessage : '\\n' + displayMessage;
     await emitReasoningStatus(prefixedMessage);
   };
 
