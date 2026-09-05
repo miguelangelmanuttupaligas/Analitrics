@@ -62,88 +62,34 @@ Generar secretos reales para todos los valores `replace-with-*` antes de levanta
 
 La VM no usa Ollama ni otro servidor local: dejar `ANALITRICS_LLM_PROVIDER=openai`, definir `OPENAI_API_KEY` y el modelo OpenAI elegido.
 
-## TLS
+## Nginx y TLS en la VM
 
-El gateway espera certificados en:
-
-```text
-/var/analitrics/librechat/certs/analitrics.crt
-/var/analitrics/librechat/certs/analitrics.key
-```
-
-En produccion deben ser certificados validos para `analitrics.com`. El certificado autofirmado local no debe usarse en la VM publica.
-
-### Obtener certificado con Certbot
-
-Primero validar que el DNS apunte a la VM:
-
-```text
-analitrics.com -> IP_PUBLICA_VM
-```
-
-Instalar Certbot:
-
-```bash
-sudo apt update
-sudo apt install certbot
-```
-
-Emitir certificado con modo standalone. El puerto `80` debe estar libre temporalmente:
-
-```bash
-sudo certbot certonly --standalone -d analitrics.com
-```
-
-Certbot genera:
+Esta VM ya tiene Nginx compartido para otros dominios. Ese Nginx conserva los puertos públicos `80/443` y el certificado existente de Certbot:
 
 ```text
 /etc/letsencrypt/live/analitrics.com/fullchain.pem
 /etc/letsencrypt/live/analitrics.com/privkey.pem
 ```
 
-### Opcion simple: copiar certificados
+El gateway Docker de Analitrics no usa TLS ni certificados en producción. Solo escucha en `127.0.0.1:3090`; Nginx del host hace proxy HTTP hacia ese puerto y termina TLS públicamente.
 
-Funciona con el `docker-compose.yml` actual:
-
-```bash
-sudo mkdir -p /var/analitrics/librechat/certs
-
-sudo cp /etc/letsencrypt/live/analitrics.com/fullchain.pem \
-  /var/analitrics/librechat/certs/analitrics.crt
-
-sudo cp /etc/letsencrypt/live/analitrics.com/privkey.pem \
-  /var/analitrics/librechat/certs/analitrics.key
-
-sudo chmod 644 /var/analitrics/librechat/certs/analitrics.crt
-sudo chmod 600 /var/analitrics/librechat/certs/analitrics.key
-```
-
-Esta opcion requiere volver a copiar los archivos cuando Certbot renueve el certificado.
-
-### Opcion recomendada: montar `/etc/letsencrypt`
-
-No basta con crear symlinks desde `/var/analitrics/librechat/certs` hacia `/etc/letsencrypt/live/...`, porque el contenedor solo ve las rutas montadas. El symlink puede quedar roto dentro de Docker.
-
-Para evitar copias manuales, montar `/etc/letsencrypt` en el gateway como solo lectura:
-
-```yaml
-gateway:
-  volumes:
-    - /etc/letsencrypt:/etc/letsencrypt:ro
-```
-
-Y cambiar el Nginx del gateway para leer directamente:
-
-```nginx
-ssl_certificate /etc/letsencrypt/live/analitrics.com/fullchain.pem;
-ssl_certificate_key /etc/letsencrypt/live/analitrics.com/privkey.pem;
-```
-
-Con este enfoque, la renovacion de Certbot queda disponible para el contenedor. Luego de renovar, recargar o reiniciar el gateway:
+El site versionado está en [analitrics.com.conf](../deploy/nginx/analitrics.com.conf). Antes de cambiarlo, conservar una copia fuera de `sites-enabled`:
 
 ```bash
-docker restart analitrics-analitrics-gateway
+sudo install -d -m 700 /root/analitrics-migration-backup
+sudo cp -a /etc/nginx/sites-enabled/analitrics.com \
+  /root/analitrics-migration-backup/analitrics.com.legacy
 ```
+
+Después de desplegar los contenedores nuevos, instalar el site, validar y recargar Nginx:
+
+```bash
+sudo install -m 644 deploy/nginx/analitrics.com.conf /etc/nginx/sites-enabled/analitrics.com
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+No se debe detener Nginx, copiar certificados a Docker ni crear hooks de Certbot. La renovación existente de Certbot continúa siendo responsabilidad del Nginx del host.
 
 ## Primer arranque
 
@@ -151,8 +97,8 @@ Antes de iniciar:
 
 1. El DNS `analitrics.com` debe resolver a la IP pública de la VM.
 2. Los puertos TCP `80` y `443` deben estar permitidos por el firewall o security group.
-3. Ningún Nginx/Apache del host debe ocupar los puertos `80` y `443`; el gateway Docker de Analitrics será el único endpoint público.
-4. Deben existir los certificados válidos en `/var/analitrics/librechat/certs/analitrics.crt` y `/var/analitrics/librechat/certs/analitrics.key`.
+3. Nginx del host debe seguir activo y el site `analitrics.com` debe hacer proxy a `127.0.0.1:3090`.
+4. El certificado existente de Certbot debe seguir legible por Nginx del host.
 
 Al iniciar Keycloak por primera vez, importa [analitrics-realm.json](../keycloak/realm/analitrics-realm.json). El importador crea:
 
@@ -174,6 +120,38 @@ make librechat up
 ```
 
 `make librechat up` prepara directorios, red Docker, storage, MongoDB, Postgres de control plane, agente analitico, gateway y LibreChat.
+
+## Reemplazo del MVP antiguo
+
+En la VM identificada, el MVP anterior corresponde al proyecto Compose `librechat` con archivo `/opt/librechat/librechat/docker-compose.yml`. Detenerlo sin borrar contenedores, redes ni volúmenes:
+
+```bash
+docker compose -f /opt/librechat/librechat/docker-compose.yml stop
+```
+
+No usar `down -v`. El proyecto Odoo no forma parte de esta migración y no debe detenerse.
+
+Con el repositorio nuevo en `/opt/Analitrics`, crear los `.env` de producción, completar secretos y levantar el stack:
+
+```bash
+cd /opt/Analitrics
+cp keycloak/.env.production.example keycloak/.env
+cp librechat/custom/.env.production.example librechat/custom/.env
+
+# Editar ambos .env, generando secretos reales y usando el mismo secreto OIDC.
+make keycloak up
+make phoenix up
+make librechat up
+```
+
+Antes de cambiar el site público, confirmar que el gateway nuevo responde únicamente en loopback:
+
+```bash
+curl -I http://127.0.0.1:3090/
+docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+```
+
+Luego instalar [analitrics.com.conf](../deploy/nginx/analitrics.com.conf), validar la sintaxis y recargar Nginx. Si hubiera una incidencia, restaurar el archivo de `/root/analitrics-migration-backup/` y ejecutar `sudo systemctl reload nginx`; el MVP antiguo permanece detenido pero recuperable con `docker compose ... start`.
 
 ## Servicios administrativos por localhost
 

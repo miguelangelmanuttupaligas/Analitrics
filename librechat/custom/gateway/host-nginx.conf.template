@@ -1,0 +1,148 @@
+map $http_upgrade $connection_upgrade {
+  default upgrade;
+  '' close;
+}
+
+# TLS is terminated by the host Nginx before traffic reaches this gateway.
+server {
+  listen 80;
+  server_name ${PUBLIC_HOST};
+
+  client_max_body_size 25m;
+  resolver 127.0.0.11 valid=10s ipv6=off;
+  set $api_upstream api:${PORT};
+
+  location = /login {
+    if ($arg_redirect != "false") {
+      return 302 https://$http_host/oauth/openid;
+    }
+    proxy_pass http://$api_upstream;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Port ${PUBLIC_PORT};
+    proxy_set_header X-Tenant-Id "${ANALITRICS_DEFAULT_TENANT_ID}";
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_buffering off;
+  }
+
+  location = /login/ { return 302 https://$http_host/oauth/openid; }
+  location = /register { return 302 https://$http_host/oauth/openid; }
+  location = /admin { return 302 ${PUBLIC_ORIGIN}/admin/; }
+  location = /auth { return 301 /auth/; }
+
+  location = /api/files {
+    proxy_pass http://upload-file-wrapper:3096;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Port ${PUBLIC_PORT};
+    proxy_set_header X-Tenant-Id "${ANALITRICS_DEFAULT_TENANT_ID}";
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_buffering off;
+  }
+
+  location /admin/ {
+    proxy_pass http://admin-panel:3000/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Port ${PUBLIC_PORT};
+    proxy_set_header X-Forwarded-Prefix /admin;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_buffering off;
+    sub_filter_once off;
+    sub_filter_types application/javascript text/javascript;
+    sub_filter 'basepath:`/`' 'basepath:`/admin`';
+    sub_filter 'basepath:``' 'basepath:`/admin`';
+    sub_filter 'ua=function(e){return`/`+e}' 'ua=function(e){return`/admin/`+e}';
+    sub_filter '`/assets/' '`/admin/assets/';
+    sub_filter '"/assets/' '"/admin/assets/';
+    sub_filter '"/favicon.ico"' '"/admin/favicon.ico"';
+  }
+
+  location /admin/assets/ {
+    proxy_pass http://admin-panel:3000/assets/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Port ${PUBLIC_PORT};
+    sub_filter_once off;
+    sub_filter_types application/javascript text/javascript;
+    sub_filter 'basepath:`/`' 'basepath:`/admin`';
+    sub_filter 'basepath:``' 'basepath:`/admin`';
+    sub_filter 'ua=function(e){return`/`+e}' 'ua=function(e){return`/admin/`+e}';
+    sub_filter '`/assets/' '`/admin/assets/';
+    sub_filter '"/assets/' '"/admin/assets/';
+  }
+
+  location = /admin/favicon.ico {
+    proxy_pass http://admin-panel:3000/favicon.ico;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Port ${PUBLIC_PORT};
+  }
+
+  location /_serverFn/ {
+    proxy_pass http://admin-panel:3000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Port ${PUBLIC_PORT};
+    proxy_set_header X-Forwarded-Prefix /admin;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_buffering off;
+  }
+
+  location /auth/ {
+    proxy_pass http://keycloak:8080/auth/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Port ${PUBLIC_PORT};
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_buffering off;
+  }
+
+  location / {
+    proxy_pass http://$api_upstream;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Port ${PUBLIC_PORT};
+    proxy_set_header X-Tenant-Id "${ANALITRICS_DEFAULT_TENANT_ID}";
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_buffering off;
+  }
+}

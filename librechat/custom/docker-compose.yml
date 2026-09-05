@@ -21,11 +21,13 @@ services:
       PUBLIC_PORT: ${PUBLIC_PORT:-3443}
       PUBLIC_HOST: ${PUBLIC_HOST:-analitrics-test.com}
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-https://analitrics-test.com:3443}
+      GATEWAY_CONFIG_TEMPLATE: ${GATEWAY_CONFIG_TEMPLATE:-default.conf.template}
     command: >
-      /bin/sh -c "envsubst '$$PORT $$ANALITRICS_DEFAULT_TENANT_ID $$PUBLIC_PORT $$PUBLIC_HOST $$PUBLIC_ORIGIN' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf
+      /bin/sh -c "template=/etc/nginx/templates/$$GATEWAY_CONFIG_TEMPLATE; test -r $$template
+      && envsubst '$$PORT $$ANALITRICS_DEFAULT_TENANT_ID $$PUBLIC_PORT $$PUBLIC_HOST $$PUBLIC_ORIGIN' < $$template > /etc/nginx/conf.d/default.conf
       && nginx -g 'daemon off;'"
     volumes:
-      - ./gateway/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./gateway:/etc/nginx/templates:ro
       - volume-analitrics-librechat-certs:/etc/nginx/certs:ro
     networks:
       network-analitrics:

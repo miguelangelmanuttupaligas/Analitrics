@@ -25,7 +25,11 @@ up down:
 			else \
 				$(MAKE) --no-print-directory prepare-dirs ensure-network; \
 			fi; \
-			docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" up -d --remove-orphans; \
+			if [[ "$(STACK)" == "librechat" ]]; then \
+				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" up -d --build --remove-orphans; \
+			else \
+				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" up -d --remove-orphans; \
+			fi; \
 			if [[ "$(STACK)" == "librechat" ]]; then \
 				for i in {1..30}; do docker exec analitrics-analitrics-mongodb mongosh LibreChat --quiet --eval 'db.adminCommand({ping:1}).ok' >/dev/null 2>&1 && break || sleep 1; done; \
 				docker exec analitrics-analitrics-mongodb mongosh LibreChat --quiet --eval 'db.files.createIndex({tenantId:1,source:1,user:1,file_id:1,createdAt:-1},{name:"analitrics_files_owner_file"}); db.files.createIndex({tenantId:1,source:1,user:1,filename:1,createdAt:-1},{name:"analitrics_files_owner_filename"}); db.messages.createIndex({conversationId:1,messageId:1,createdAt:1},{name:"analitrics_messages_conversation_message"}); db.analitrics_agent_runs.createIndex({tenantId:1,userId:1,conversationId:1,createdAt:-1},{name:"analitrics_runs_conversation_recent"}); db.analitrics_agent_runs.createIndex({tenantId:1,userId:1,questionNormalized:1,createdAt:-1},{name:"analitrics_runs_question_search"}); printjson({ok:true,indexes:"analitrics"});'; \
