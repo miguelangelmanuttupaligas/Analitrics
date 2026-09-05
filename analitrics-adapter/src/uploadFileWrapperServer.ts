@@ -63,7 +63,10 @@ function shouldRewriteContext(formData: FormData): boolean {
   return false;
 }
 
-export function buildForwardHeaders(req: express.Request): Headers {
+export function buildForwardHeaders(
+  req: express.Request,
+  options: { omitContentType?: boolean } = {},
+): Headers {
   const headers = new Headers();
   const passthrough = [
     'accept',
@@ -82,6 +85,9 @@ export function buildForwardHeaders(req: express.Request): Headers {
   ];
 
   for (const name of passthrough) {
+    if (options.omitContentType && name === 'content-type') {
+      continue;
+    }
     const value = req.header(name);
     if (value) {
       headers.set(name, value);
@@ -163,7 +169,9 @@ async function proxyUpload(req: express.Request, res: express.Response): Promise
 
   const response = await fetch(`${config.LIBRECHAT_API_ORIGIN}${req.originalUrl}`, {
     method: req.method,
-    headers: buildForwardHeaders(req),
+    // `body` is a newly-built FormData. Fetch must generate a matching multipart
+    // boundary instead of inheriting the one from the client request.
+    headers: buildForwardHeaders(req, { omitContentType: true }),
     body,
   });
 
