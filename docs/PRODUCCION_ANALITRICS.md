@@ -158,34 +158,23 @@ make phoenix up
 make librechat up
 ```
 
-`make librechat up` prepara directorios, red Docker, storage, MongoDB, Postgres de control plane, agente analitico, gateway y LibreChat.
+`make librechat up` prepara directorios, red Docker, storage, MongoDB, Postgres de control plane, agente analitico, gateway y LibreChat. Detiene el agente anterior, ejecuta `alembic upgrade head`, reafirma los permisos del usuario runtime y sólo entonces arranca la suite completa.
 
 ## Migraciones del Control Plane
 
 El control plane es el Postgres de Analitrics que conserva catalogos, feedback, estados analiticos y dashboards. Su esquema se versiona mediante Alembic en `analitrics-app/migrations/`.
 
-Ejecutar una migracion solo cuando el `git pull` traiga una nueva revision dentro de esa carpeta. No se debe ejecutar antes de cada despliegue si no hay cambios de esquema.
+`make librechat up` ejecuta siempre `alembic upgrade head`. Alembic no modifica nada cuando la base ya está en la revisión actual; así, un despliegue desde una VM vacía y una actualización usan exactamente el mismo flujo.
 
-En una actualizacion con migraciones:
+En una actualización:
 
 ```bash
 cd /opt/Analitrics
 git pull --ff-only origin master
-
-# Asegura que control-postgres este disponible.
-make librechat up
-
-# Aplica todas las revisiones pendientes con el usuario administrador del control plane.
-make control-plane-migrate
-
-# Reafirma los permisos de solo lectura del usuario de runtime.
-make control-plane-grants
-
-# Recrea los servicios si el cambio tambien actualizo imagenes o configuracion.
 make librechat up
 ```
 
-`make control-plane-migrate` ejecuta `alembic upgrade head` desde una imagen efimera. No modifica el esquema desde el contenedor del agente durante una conversacion. `make control-plane-grants` mantiene al usuario de runtime sin permisos DDL, por lo que el agente no puede alterar tablas, catalogos ni migraciones. `make librechat up` lo invoca siempre despues de levantar el control plane para sincronizar la contrasena de `analitrics_runtime` con el `.env` activo.
+`make control-plane-migrate` sigue disponible para recuperación operativa puntual. Las migraciones se ejecutan desde una imagen efímera con el usuario administrador; el contenedor del agente no tiene permisos DDL. `make control-plane-grants` sincroniza el usuario runtime y tampoco se deja como paso manual del despliegue.
 
 Antes de aplicar una migracion relevante, revisar las revisiones entrantes y respaldar el Postgres de control plane:
 

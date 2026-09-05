@@ -33,8 +33,11 @@ up down:
 				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" build; \
 				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" run --rm --no-deps --user 0:0 -e ANALITRICS_APP_OWNER="$$app_owner" --entrypoint sh api -ec 'chown -R "$$ANALITRICS_APP_OWNER" /app/uploads /app/logs /app/skill /app/data /app/client/public/images'; \
 				docker run --rm --user 0:0 --entrypoint sh -e ANALITRICS_APP_OWNER="$$app_owner" -v volume-analitrics-analytics-cache:/var/analitrics/analytics analitrics-app:local -ec 'chown -R "$$ANALITRICS_APP_OWNER" /var/analitrics/analytics/cache'; \
-				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" up -d --wait --wait-timeout 150 --no-build --remove-orphans; \
+				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" up -d --wait --wait-timeout 150 --no-build control-postgres; \
+				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" stop analytics-agent >/dev/null 2>&1 || true; \
+				$(MAKE) --no-print-directory control-plane-migrate; \
 				$(MAKE) --no-print-directory control-plane-grants; \
+				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" up -d --wait --wait-timeout 150 --no-build --remove-orphans; \
 			else \
 				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" up -d --remove-orphans; \
 			fi; \
