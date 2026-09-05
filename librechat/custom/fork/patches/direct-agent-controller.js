@@ -564,13 +564,18 @@ async function runAnalitricsDirectController(req, res, initializeClient, addTitl
   let finalPayload = null;
 
   const emittedProgress = new Set();
+  let emittedReasoningStatusCount = 0;
   const emitStatusText = async (message) => {
     const displayMessage = mapAnalitricsProgress(message);
     if (!displayMessage || emittedProgress.has(displayMessage)) {
       return;
     }
     emittedProgress.add(displayMessage);
-    await emitReasoningStatus(displayMessage);
+    // LibreChat appends THINK deltas into a single content part. Delimit each
+    // status here so separate analytical stages never run into one another.
+    const prefixedMessage =
+      emittedReasoningStatusCount++ === 0 ? displayMessage : `\n${displayMessage}`;
+    await emitReasoningStatus(prefixedMessage);
   };
 
   const emitProgress = async (message) => {

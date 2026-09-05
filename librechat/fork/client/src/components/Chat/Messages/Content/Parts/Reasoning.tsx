@@ -137,9 +137,14 @@ const Reasoning = memo((props: ReasoningProps) => {
           <div className="relative overflow-hidden" ref={expandRef}>
             {shouldRenderBody && (
               <>
-                <ThinkingContent
-                  animate={smoothStreaming && effectiveIsSubmitting && isLast && isExpanded}
-                >
+                {/*
+                  Progress from Analitrics arrives as frequent reasoning deltas.
+                  The generic word-fade animation can leave newly appended words
+                  temporarily transparent, which reads as missing characters.
+                  Render the accumulated reasoning verbatim; the label still
+                  signals that the response is in progress.
+                */}
+                <ThinkingContent animate={false}>
                   {reasoningText}
                 </ThinkingContent>
                 <FloatingThinkingBar
