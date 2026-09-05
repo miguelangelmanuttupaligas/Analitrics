@@ -201,11 +201,18 @@ prepare-dirs:
 		configured_uid="$$(awk -F= '$$1 == "UID" && $$2 ~ /^[0-9]+$$/ { print $$2; exit }' "$$app_env_file" 2>/dev/null || true)"; \
 		configured_gid="$$(awk -F= '$$1 == "GID" && $$2 ~ /^[0-9]+$$/ { print $$2; exit }' "$$app_env_file" 2>/dev/null || true)"; \
 		local_owner="$${configured_uid:-1000}:$${configured_gid:-1000}"; \
-	for dir in /var/analitrics/librechat/{uploads,logs,skill,data,images,certs} /var/analitrics/analytics/cache; do \
-		if [[ "$$(stat -c '%u:%g' "$$dir")" != "$$local_owner" ]]; then \
-			sudo chown -R "$$local_owner" "$$dir"; \
-		fi; \
-	done
+	for dir in /var/analitrics/librechat/{uploads,logs,skill,data,images} /var/analitrics/analytics/cache; do \
+		# A root directory can have the correct owner while a nested file does not. \
+		sudo chown -R "$$local_owner" "$$dir"; \
+	done; \
+	if [[ -f /var/analitrics/librechat/certs/analitrics.crt ]]; then \
+		sudo chown root:root /var/analitrics/librechat/certs/analitrics.crt; \
+		sudo chmod 644 /var/analitrics/librechat/certs/analitrics.crt; \
+	fi; \
+	if [[ -f /var/analitrics/librechat/certs/analitrics.key ]]; then \
+		sudo chown root:root /var/analitrics/librechat/certs/analitrics.key; \
+		sudo chmod 600 /var/analitrics/librechat/certs/analitrics.key; \
+	fi
 
 help:
 	@echo "Usage:"
