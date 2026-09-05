@@ -8,7 +8,8 @@ RUN npm install
 COPY tsconfig.json ./
 COPY src ./src
 
-RUN npm run build
+RUN npm run build \
+  && NODE_ENV=test node --test dist/uploadFileWrapperServer.test.js
 
 ENV NODE_ENV=production
 
