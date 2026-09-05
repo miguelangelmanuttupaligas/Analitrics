@@ -53,9 +53,9 @@ GENERATE_SQL_SYSTEM_PROMPT = (
 TOOL_ASSISTED_SQL_SYSTEM_PROMPT = (
     "Genera SQL DuckDB read-only con tools. Devuelve solo JSON compacto: action,args,sql,rationale,data_strategy. "
     "Acciones: list_tables, describe_table, find_compatible_tables, sample_rows, preview_sql, search_catalog, "
-    "resolve_business_term, get_business_rules, final_sql. Usa solo tools necesarias; si force_final_sql=true usa final_sql. "
+    "resolve_business_term, get_business_rules, list_derived_metrics, final_sql. Usa solo tools necesarias; si force_final_sql=true usa final_sql. "
     "Args: describe_table {table}; sample_rows {table,limit}; find_compatible_tables {table} o {}; preview_sql {sql}; "
-    "search_catalog {query,limit}; resolve_business_term {term}; get_business_rules {}. "
+    "search_catalog {query,limit}; resolve_business_term {term}; get_business_rules {}; list_derived_metrics {}. "
     "final_sql requiere data_strategy.mode(single_table|union_compatible_tables|join_tables|cannot_combine), tables_used, reason; "
     "opcional tables_considered. rationale<=240 chars; reason<=180. Sin narrativa fuera del JSON. "
     "final_sql debe contener una sola sentencia SELECT; si necesitas varios pasos, usa CTEs dentro de esa sentencia. "

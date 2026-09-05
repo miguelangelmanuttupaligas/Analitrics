@@ -137,6 +137,16 @@ class CatalogRepository:
                 """,
                 (tenant_id, user_id, conversation_id),
             ).fetchall()
+            metric_rows = con.execute(
+                """
+                select metric_id, source_file_id, source_filename, name, label, definition, created_from,
+                       created_at, updated_at
+                from analysis_catalog_metrics
+                where tenant_id = %s and user_id = %s and conversation_id = %s
+                order by updated_at desc, metric_id desc
+                """,
+                (tenant_id, user_id, conversation_id),
+            ).fetchall()
             analysis_state_rows = con.execute(
                 """
                 select state_id, message_id, run_id, question, answer_summary, intent, metric,
@@ -179,6 +189,20 @@ class CatalogRepository:
             }
             for row in feedback_rows
         ]
+        derived_metrics = [
+            {
+                "metricId": int(row["metric_id"]),
+                "sourceFileId": row["source_file_id"],
+                "sourceFilename": row["source_filename"],
+                "name": row["name"],
+                "label": row["label"],
+                "definition": row["definition"] or {},
+                "createdFrom": row["created_from"] or {},
+                "createdAt": row["created_at"].isoformat() if row["created_at"] else None,
+                "updatedAt": row["updated_at"].isoformat() if row["updated_at"] else None,
+            }
+            for row in metric_rows
+        ]
         business_summary = self._business_summary_builder.build(files, tables, feedback)
         return {
             "found": True,
@@ -193,6 +217,7 @@ class CatalogRepository:
             "tables": tables,
             "profiles": profiles,
             "feedback": feedback,
+            "derivedMetrics": derived_metrics,
             "recentAnalysisStates": analysis_states,
             "suggestedFeedback": suggested_feedback,
             "pendingClarification": conversation["pending_clarification"],
@@ -210,6 +235,67 @@ class CatalogRepository:
                 "rowCountTotal": sum(int(table["rowCount"] or 0) for table in data_tables),
                 "cachePath": conversation["cache_path"],
             },
+        }
+
+    def save_derived_metric(
+        self,
+        tenant_id: str,
+        user_id: str,
+        conversation_id: str,
+        source_file_id: str | None,
+        source_filename: str | None,
+        name: str,
+        label: str,
+        definition: dict[str, Any],
+        created_from: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        name = self._metric_name(name)
+        label = label.strip()[:120] or name.replace("_", " ")
+        if not definition:
+            raise RuntimeError("derived metric definition is required")
+        now = utc_now()
+        with self._connection_factory.connect() as con:
+            row = con.execute(
+                """
+                insert into analysis_catalog_metrics (
+                    tenant_id, user_id, conversation_id, source_file_id, source_filename,
+                    name, label, definition, created_from, created_at, updated_at
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
+                on conflict (tenant_id, user_id, conversation_id, name) do update set
+                    source_file_id = excluded.source_file_id,
+                    source_filename = excluded.source_filename,
+                    label = excluded.label,
+                    definition = excluded.definition,
+                    created_from = excluded.created_from,
+                    updated_at = excluded.updated_at
+                returning metric_id, source_file_id, source_filename, name, label, definition,
+                          created_from, created_at, updated_at
+                """,
+                (
+                    tenant_id,
+                    user_id,
+                    conversation_id,
+                    source_file_id,
+                    source_filename,
+                    name,
+                    label,
+                    self._json(definition),
+                    self._json(created_from or {}),
+                    now,
+                    now,
+                ),
+            ).fetchone()
+        return {
+            "metricId": int(row["metric_id"]),
+            "sourceFileId": row["source_file_id"],
+            "sourceFilename": row["source_filename"],
+            "name": row["name"],
+            "label": row["label"],
+            "definition": row["definition"] or {},
+            "createdFrom": row["created_from"] or {},
+            "createdAt": row["created_at"].isoformat() if row["created_at"] else None,
+            "updatedAt": row["updated_at"].isoformat() if row["updated_at"] else None,
         }
 
     def save_feedback(
@@ -431,6 +517,55 @@ class CatalogRepository:
                 "step": int(row["step"]),
                 "label": row["label"],
                 "content": row["content"],
+                "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+            }
+            for row in rows
+        ]
+
+    def find_derived_metrics_for_request(
+        self,
+        request: AgentRequest,
+        source_file_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        if not request.conversation_id:
+            return []
+        user_id = self._user_id(request)
+        file_ids = [file_id for file_id in (source_file_ids or []) if file_id]
+        with self._connection_factory.connect() as con:
+            if file_ids:
+                rows = con.execute(
+                    """
+                    select metric_id, source_file_id, source_filename, name, label, definition, created_from, updated_at
+                    from analysis_catalog_metrics
+                    where tenant_id = %s
+                      and user_id = %s
+                      and conversation_id = %s
+                      and (source_file_id = any(%s) or source_file_id is null)
+                    order by updated_at desc
+                    """,
+                    (request.tenant_id, user_id, request.conversation_id, file_ids),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    """
+                    select metric_id, source_file_id, source_filename, name, label, definition, created_from, updated_at
+                    from analysis_catalog_metrics
+                    where tenant_id = %s
+                      and user_id = %s
+                      and conversation_id = %s
+                    order by updated_at desc
+                    """,
+                    (request.tenant_id, user_id, request.conversation_id),
+                ).fetchall()
+        return [
+            {
+                "metric_id": int(row["metric_id"]),
+                "source_file_id": row["source_file_id"],
+                "source_filename": row["source_filename"],
+                "name": row["name"],
+                "label": row["label"],
+                "definition": row["definition"] or {},
+                "created_from": row["created_from"] or {},
                 "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
             }
             for row in rows
@@ -667,6 +802,34 @@ class CatalogRepository:
                     on analysis_conversation_states (tenant_id, user_id, conversation_id, message_id)
                     """
                 )
+                con.execute(
+                    """
+                    create table if not exists analysis_catalog_metrics (
+                        metric_id bigserial primary key,
+                        tenant_id text not null,
+                        user_id text not null,
+                        conversation_id text not null,
+                        source_file_id text,
+                        source_filename text,
+                        name text not null,
+                        label text not null,
+                        definition jsonb not null,
+                        created_from jsonb not null default '{}'::jsonb,
+                        created_at timestamptz not null,
+                        updated_at timestamptz not null,
+                        unique (tenant_id, user_id, conversation_id, name),
+                        foreign key (tenant_id, user_id, conversation_id)
+                            references analysis_catalog_sessions (tenant_id, user_id, conversation_id)
+                            on delete cascade
+                    )
+                    """
+                )
+                con.execute(
+                    """
+                    create index if not exists idx_analysis_catalog_metrics_conversation
+                    on analysis_catalog_metrics (tenant_id, user_id, conversation_id, updated_at)
+                    """
+                )
 
     def invalidate_file(self, tenant_id: str, user_id: str, file_id: str, reason: str) -> int:
         now = utc_now()
@@ -746,6 +909,12 @@ class CatalogRepository:
 
     def _json(self, value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, default=str)
+
+    def _metric_name(self, value: str) -> str:
+        clean = "".join(char.lower() if char.isalnum() else "_" for char in value.strip()).strip("_")
+        if not clean:
+            raise RuntimeError("derived metric name is required")
+        return clean[:80]
 
     def _prune_analysis_states(
         self,

@@ -7,9 +7,12 @@
 *.env
 *.env.*
 !*.env.example
+!keycloak/.env.production.example
+!librechat/custom/.env.production.example
 librechat-src/.env
 keycloak/.env
 credenciales.txt
+credenciales.md
 
 # Runtime data
 /var/analitrics/
@@ -28,5 +31,6 @@ credenciales.txt
 # Local test data
 data_*.xlsx
 ventas_*.xlsx
+/tmp/
 *.duckdb
 *.duckdb.wal

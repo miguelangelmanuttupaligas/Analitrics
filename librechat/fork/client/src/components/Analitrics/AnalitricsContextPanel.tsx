@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   AlertCircle,
   CalendarDays,
@@ -13,23 +13,29 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { Button, Sidebar, TooltipAnchor } from '@librechat/client';
 import { Constants } from 'librechat-data-provider';
 import type {
   AnalitricsColumn,
   AnalitricsFeedback,
   AnalitricsFile,
   AnalitricsProfile,
+  AnalitricsAnalysisState,
   AnalitricsTable,
 } from '~/hooks';
 import {
   useAnalitricsContext,
-  useCreateAnalitricsDashboardFromAnalysis,
+  useAnalitricsDashboards,
+  useCreateAnalitricsDashboard,
+  useLocalize,
   useSaveAnalitricsCatalogFeedback,
 } from '~/hooks';
+import type { TranslationKeys } from '~/hooks/useLocalize';
 import { cn } from '~/utils';
 
 type AnalitricsContextPanelProps = {
   conversationId?: string | null;
+  onCollapsePanel?: () => void;
 };
 
 type NormalizedColumn = {
@@ -71,49 +77,50 @@ type FeedbackSource = {
 
 type CatalogFeedbackStep = {
   step: number;
-  label: string;
-  prompt: string;
-  placeholder: string;
+  labelKey: TranslationKeys;
+  promptKey: TranslationKeys;
+  placeholderKey: TranslationKeys;
 };
 
 type PanelView = 'general' | 'catalog';
+type LocalizeFn = ReturnType<typeof useLocalize>;
 
 const feedbackSteps: CatalogFeedbackStep[] = [
   {
     step: 1,
-    label: 'Nombrar conceptos',
-    prompt: 'Define cómo se llaman estos conceptos en tu negocio.',
-    placeholder: 'Ejemplo: producto significa curso vendido; monto significa ingreso cobrado.',
+    labelKey: 'com_analitrics_step_1_label',
+    promptKey: 'com_analitrics_step_1_prompt',
+    placeholderKey: 'com_analitrics_step_1_placeholder',
   },
   {
     step: 2,
-    label: 'Confirmar indicadores',
-    prompt: 'Indica qué métricas deben guiar el análisis.',
-    placeholder: 'Ejemplo: ingresos, ticket promedio, ventas pagadas, cantidad de alumnos.',
+    labelKey: 'com_analitrics_step_2_label',
+    promptKey: 'com_analitrics_step_2_prompt',
+    placeholderKey: 'com_analitrics_step_2_placeholder',
   },
   {
     step: 3,
-    label: 'Confirmar dimensiones',
-    prompt: 'Aclara los cortes gerenciales que usas para comparar.',
-    placeholder: 'Ejemplo: curso, canal, mes, país, asesor comercial, categoría.',
+    labelKey: 'com_analitrics_step_3_label',
+    promptKey: 'com_analitrics_step_3_prompt',
+    placeholderKey: 'com_analitrics_step_3_placeholder',
   },
   {
     step: 4,
-    label: 'Agregar reglas de negocio',
-    prompt: 'Describe filtros, exclusiones o fórmulas importantes.',
-    placeholder: 'Ejemplo: excluir registros de prueba; usar fecha de pago; ingreso neto descuenta becas.',
+    labelKey: 'com_analitrics_step_4_label',
+    promptKey: 'com_analitrics_step_4_prompt',
+    placeholderKey: 'com_analitrics_step_4_placeholder',
   },
   {
     step: 5,
-    label: 'Corregir interpretaciones',
-    prompt: 'Corrige cualquier lectura incorrecta del agente.',
-    placeholder: 'Ejemplo: precio no es ingreso; estado matriculado no significa pago confirmado.',
+    labelKey: 'com_analitrics_step_5_label',
+    promptKey: 'com_analitrics_step_5_prompt',
+    placeholderKey: 'com_analitrics_step_5_placeholder',
   },
   {
     step: 6,
-    label: 'Aprobar definiciones',
-    prompt: 'Marca qué definiciones ya pueden tratarse como confiables.',
-    placeholder: 'Ejemplo: ingreso total = suma de pagos confirmados; curso es la dimensión principal.',
+    labelKey: 'com_analitrics_step_6_label',
+    promptKey: 'com_analitrics_step_6_prompt',
+    placeholderKey: 'com_analitrics_step_6_placeholder',
   },
 ];
 
@@ -122,17 +129,20 @@ const numberFormat = new Intl.NumberFormat('es-PE');
 const formatNumber = (value?: number | null) =>
   numberFormat.format(Number.isFinite(value ?? NaN) ? Number(value) : 0);
 
-const businessSourceName = (index: number) => `Ámbito analítico ${index + 1}`;
+const businessSourceName = (index: number, localize: LocalizeFn) =>
+  localize('com_analitrics_business_scope', { index: index + 1 });
 
-const fileDisplayName = (file: AnalitricsFile, index: number) =>
-  file.filename || file.storageKey?.split('/').at(-1) || `Archivo ${index + 1}`;
+const fileDisplayName = (file: AnalitricsFile, index: number, localize: LocalizeFn) =>
+  file.filename ||
+  file.storageKey?.split('/').at(-1) ||
+  localize('com_analitrics_file_fallback', { index: index + 1 });
 
 const fileId = (file: AnalitricsFile, index: number) =>
   file.file_id || file.storageKey || file.filename || `file-${index}`;
 
-const buildFeedbackSources = (files: AnalitricsFile[]): FeedbackSource[] =>
+const buildFeedbackSources = (files: AnalitricsFile[], localize: LocalizeFn): FeedbackSource[] =>
   files.map((file, index) => {
-    const filename = fileDisplayName(file, index);
+    const filename = fileDisplayName(file, index, localize);
     return {
       fileId: fileId(file, index),
       filename,
@@ -140,12 +150,12 @@ const buildFeedbackSources = (files: AnalitricsFile[]): FeedbackSource[] =>
     };
   });
 
-const normalizeColumn = (column: AnalitricsColumn): NormalizedColumn => {
+const normalizeColumn = (column: AnalitricsColumn, localize: LocalizeFn): NormalizedColumn => {
   if (typeof column === 'string') {
     return { name: column, type: '' };
   }
   return {
-    name: column?.name || 'Campo',
+    name: column?.name || localize('com_analitrics_column_fallback'),
     type: column?.type || '',
     distinctCount: column?.distinct_count,
     average: column?.avg,
@@ -222,7 +232,7 @@ const currencyFormat = new Intl.NumberFormat('es-PE', {
   maximumFractionDigits: 0,
 });
 
-const compactText = (value: string, fallback = 'Sin definición guardada') =>
+const compactText = (value: string, fallback: string) =>
   value.trim().length > 0 ? value.trim() : fallback;
 
 const latestFeedbackForSteps = (feedback: AnalitricsFeedback[], steps: number[]) =>
@@ -244,7 +254,7 @@ const findColumnByTerms = (columns: NormalizedColumn[], terms: string[]) =>
 
 const formatMetricValue = (value?: number | null) => {
   if (value == null || !Number.isFinite(value)) {
-    return 'Pendiente';
+    return '';
   }
   return Math.abs(value) >= 1000 ? currencyFormat.format(value) : formatNumber(value);
 };
@@ -264,7 +274,10 @@ const preferredDimensionColumn = (columns: NormalizedColumn[]) =>
   columns.find((column) => isLikelySegment(column.name, column.type) && column.distinctCount != null) ||
   columns.find((column) => !isNumericType(column.type) && !isDateType(column.type) && column.distinctCount != null);
 
-const buildExecutiveKpis = (dataset: DatasetInsight | undefined): ExecutiveKpi[] => {
+const buildExecutiveKpis = (
+  dataset: DatasetInsight | undefined,
+  localize: LocalizeFn,
+): ExecutiveKpi[] => {
   const columns = dataset?.columns ?? [];
   const metricColumn = preferredMetricColumn(columns);
   const dimensionColumn = preferredDimensionColumn(columns);
@@ -273,60 +286,68 @@ const buildExecutiveKpis = (dataset: DatasetInsight | undefined): ExecutiveKpi[]
   return [
     {
       key: 'rows',
-      label: 'Registros',
+      label: localize('com_analitrics_rows'),
       value: formatNumber(dataset?.rowCount ?? 0),
-      detail: 'Filas activas del archivo seleccionado.',
+      detail: localize('com_analitrics_rows_detail'),
       confidence: dataset?.rowCount ? 'known' : 'pending',
     },
     {
       key: 'columns',
-      label: 'Variables',
+      label: localize('com_analitrics_variables'),
       value: formatNumber(dataset?.columnCount ?? 0),
-      detail: 'Campos disponibles para análisis.',
+      detail: localize('com_analitrics_variables_detail'),
       confidence: dataset?.columnCount ? 'known' : 'pending',
     },
     {
       key: 'main_metric',
-      label: metricColumn?.sum != null ? `Total ${metricColumn.name}` : metricColumn?.name || 'Indicador principal',
-      value: formatMetricValue(metricColumn?.sum ?? metricColumn?.average),
+      label: metricColumn?.sum != null ? `Total ${metricColumn.name}` : metricColumn?.name || localize('com_analitrics_main_indicator'),
+      value: formatMetricValue(metricColumn?.sum ?? metricColumn?.average) || localize('com_analitrics_pending'),
       detail:
         metricColumn?.sum != null
-          ? `Suma detectada en ${metricColumn.name}`
+          ? localize('com_analitrics_sum_detected', { field: metricColumn.name })
           : metricColumn?.average != null
-            ? `Promedio detectado en ${metricColumn.name}`
-            : 'Confirma el indicador principal.',
+            ? localize('com_analitrics_average_detected', { field: metricColumn.name })
+            : localize('com_analitrics_confirm_main_indicator'),
       confidence: metricColumn?.sum != null || metricColumn?.average != null ? 'estimated' : 'pending',
     },
     {
       key: 'main_dimension',
-      label: dimensionColumn?.name || 'Dimensión principal',
-      value: dimensionColumn?.distinctCount != null ? formatNumber(dimensionColumn.distinctCount) : 'Pendiente',
+      label: dimensionColumn?.name || localize('com_analitrics_main_dimension'),
+      value: dimensionColumn?.distinctCount != null ? formatNumber(dimensionColumn.distinctCount) : localize('com_analitrics_pending'),
       detail:
         dimensionColumn?.distinctCount != null
-          ? `Valores únicos detectados en ${dimensionColumn.name}`
+          ? localize('com_analitrics_distinct_values_detected', { field: dimensionColumn.name })
           : dateCount > 0
-            ? `${dateCount} campo(s) temporal(es) detectados.`
-            : 'Confirma el corte gerencial principal.',
+            ? localize('com_analitrics_time_fields_detected', { count: dateCount })
+            : localize('com_analitrics_confirm_main_dimension'),
       confidence: dimensionColumn?.distinctCount != null ? 'estimated' : 'pending',
     },
   ];
 };
 
-const buildExecutiveSummary = (dataset: DatasetInsight | undefined, feedback: AnalitricsFeedback[]) => {
+const buildExecutiveSummary = (
+  dataset: DatasetInsight | undefined,
+  feedback: AnalitricsFeedback[],
+  localize: LocalizeFn,
+) => {
   if (!dataset) {
-    return 'Selecciona un archivo procesado para ver su lectura ejecutiva.';
+    return localize('com_analitrics_select_processed_file');
   }
   const metric = preferredMetricColumn(dataset.columns);
   const dimension = preferredDimensionColumn(dataset.columns);
   const userDefinition = latestFeedbackForSteps(feedback, [1, 2, 3, 4, 6])?.content;
   const parts = [
-    `${dataset.filename || dataset.name} contiene ${formatNumber(dataset.rowCount)} registros y ${formatNumber(dataset.columnCount)} variables.`,
+    localize('com_analitrics_file_contains', {
+      filename: dataset.filename || dataset.name,
+      rows: formatNumber(dataset.rowCount),
+      columns: formatNumber(dataset.columnCount),
+    }),
     dataset.metricCandidates.length > 0
-      ? `Se detectan indicadores como ${dataset.metricCandidates.slice(0, 3).join(', ')}.`
-      : 'Aún falta confirmar los indicadores de negocio.',
-    dimension ? `El corte gerencial más evidente es ${dimension.name}.` : undefined,
-    metric ? `El indicador numérico más útil para iniciar es ${metric.name}.` : undefined,
-    userDefinition ? `Definición aportada: ${userDefinition}` : undefined,
+      ? localize('com_analitrics_detected_indicators', { items: dataset.metricCandidates.slice(0, 3).join(', ') })
+      : localize('com_analitrics_missing_business_metrics'),
+    dimension ? localize('com_analitrics_obvious_dimension', { field: dimension.name }) : undefined,
+    metric ? localize('com_analitrics_useful_numeric_indicator', { field: metric.name }) : undefined,
+    userDefinition ? localize('com_analitrics_user_definition', { definition: userDefinition }) : undefined,
   ].filter(Boolean);
 
   return parts.slice(0, 4).join(' ');
@@ -335,6 +356,7 @@ const buildExecutiveSummary = (dataset: DatasetInsight | undefined, feedback: An
 const buildDatasetInsights = (
   tables: AnalitricsTable[],
   profiles: AnalitricsProfile[],
+  localize: LocalizeFn,
 ): DatasetInsight[] => {
   const sourceProfiles =
     profiles.length > 0
@@ -358,7 +380,7 @@ const buildDatasetInsights = (
   }
 
   return [...grouped.entries()].map(([key, group], index) => {
-    const columns = group.flatMap((profile) => profile.columns ?? []).map(normalizeColumn);
+    const columns = group.flatMap((profile) => profile.columns ?? []).map((column) => normalizeColumn(column, localize));
     const numericColumns = columns.filter((column) => isNumericType(column.type));
     const explicitMetricCandidates = columns
       .filter((column) => isLikelyKpi(column.name, column.type))
@@ -366,7 +388,7 @@ const buildDatasetInsights = (
 
     return {
       fileId: key,
-      name: businessSourceName(index),
+      name: businessSourceName(index, localize),
       filename: group.find((profile) => profile.source_filename)?.source_filename,
       rowCount: group.reduce((total, profile) => total + Number(profile.row_count || 0), 0),
       columnCount: columns.length,
@@ -389,9 +411,13 @@ const buildDatasetInsights = (
   });
 };
 
-function KpiCard({ kpi }: { kpi: ExecutiveKpi }) {
+function KpiCard({ kpi, localize }: { kpi: ExecutiveKpi; localize: LocalizeFn }) {
   const statusLabel =
-    kpi.confidence === 'known' ? 'Validado' : kpi.confidence === 'estimated' ? 'Estimado' : 'Pendiente';
+    kpi.confidence === 'known'
+      ? localize('com_analitrics_validated')
+      : kpi.confidence === 'estimated'
+        ? localize('com_analitrics_estimated')
+        : localize('com_analitrics_pending');
 
   return (
     <article className="rounded-lg border border-border-light bg-surface-secondary p-3">
@@ -458,9 +484,15 @@ function ChipList({ items, empty }: { items: string[]; empty: string }) {
   );
 }
 
-function FeedbackHistory({ items }: { items: AnalitricsFeedback[] }) {
+function FeedbackHistory({
+  items,
+  localize,
+}: {
+  items: AnalitricsFeedback[];
+  localize: LocalizeFn;
+}) {
   if (items.length === 0) {
-    return <p className="text-xs text-text-secondary">Sin aportes guardados todavía.</p>;
+    return <p className="text-xs text-text-secondary">{localize('com_analitrics_no_saved_contributions')}</p>;
   }
 
   return (
@@ -478,15 +510,17 @@ function SourceSelector({
   sources,
   selectedFileId,
   onChange,
+  localize,
 }: {
   sources: FeedbackSource[];
   selectedFileId: string;
   onChange: (fileId: string) => void;
+  localize: LocalizeFn;
 }) {
   if (sources.length === 0) {
     return (
       <div className="rounded-lg border border-border-light bg-surface-secondary p-3 text-xs text-text-secondary">
-        Adjunta y procesa un archivo para enriquecer su catálogo.
+        {localize('com_analitrics_source_missing')}
       </div>
     );
   }
@@ -496,7 +530,7 @@ function SourceSelector({
   return (
     <div className="rounded-lg border border-border-light bg-surface-secondary p-3">
       <label className="text-xs font-medium text-text-primary" htmlFor="analitrics-feedback-source">
-        Archivo a enriquecer
+        {localize('com_analitrics_source_enrich')}
       </label>
       <select
         id="analitrics-feedback-source"
@@ -511,7 +545,9 @@ function SourceSelector({
         ))}
       </select>
       <p className="mt-2 text-xs text-text-secondary">
-        Los aportes se guardarán solo para {selected?.filename || 'el archivo seleccionado'}.
+        {localize('com_analitrics_source_feedback_saved_for', {
+          filename: selected?.filename || localize('com_analitrics_selected_file'),
+        })}
       </p>
     </div>
   );
@@ -521,10 +557,12 @@ function ExecutiveFileSelector({
   sources,
   selectedFileId,
   onChange,
+  localize,
 }: {
   sources: FeedbackSource[];
   selectedFileId: string;
   onChange: (fileId: string) => void;
+  localize: LocalizeFn;
 }) {
   if (sources.length === 0) {
     return null;
@@ -533,7 +571,7 @@ function ExecutiveFileSelector({
   return (
     <div className="rounded-lg border border-border-light bg-surface-secondary p-3">
       <label className="text-xs font-medium text-text-primary" htmlFor="analitrics-executive-source">
-        Archivo analizado
+        {localize('com_analitrics_source_analyzed')}
       </label>
       <select
         id="analitrics-executive-source"
@@ -554,23 +592,25 @@ function ExecutiveFileSelector({
 function ViewSwitch({
   activeView,
   onChange,
+  localize,
 }: {
   activeView: PanelView;
   onChange: (view: PanelView) => void;
+  localize: LocalizeFn;
 }) {
   const items: Array<{
     id: PanelView;
-    title: string;
+    titleKey: TranslationKeys;
     icon: LucideIcon;
   }> = [
     {
       id: 'general',
-      title: 'General',
+      titleKey: 'com_analitrics_context_general',
       icon: FileSpreadsheet,
     },
     {
       id: 'catalog',
-      title: 'Catálogo',
+      titleKey: 'com_analitrics_context_catalog',
       icon: PencilLine,
     },
   ];
@@ -595,7 +635,7 @@ function ViewSwitch({
           >
             <div className="flex items-center gap-2">
               <Icon className="size-4 shrink-0" aria-hidden="true" />
-              <span className="text-sm font-semibold">{item.title}</span>
+              <span className="text-sm font-semibold">{localize(item.titleKey)}</span>
             </div>
           </button>
         );
@@ -633,6 +673,13 @@ const suggestedFeedbackBelongsToSource = (
   return false;
 };
 
+const isDashboardReadyState = (state: AnalitricsAnalysisState) => {
+  const sql = String(state.last_sql || '').trim();
+  const confidence = String(state.state?.confidence || '').toLowerCase();
+  const intent = String(state.intent || state.state?.conversation_plan?.request_kind || '').toLowerCase();
+  return Boolean(sql) && confidence !== 'low' && intent !== 'metadata_literal' && intent !== 'out_of_scope';
+};
+
 function CatalogFeedbackCard({
   step,
   conversationId,
@@ -642,6 +689,7 @@ function CatalogFeedbackCard({
   expanded,
   onToggle,
   suggestedContent,
+  localize,
 }: {
   step: CatalogFeedbackStep;
   conversationId?: string | null;
@@ -651,6 +699,7 @@ function CatalogFeedbackCard({
   expanded: boolean;
   onToggle: () => void;
   suggestedContent?: string;
+  localize: LocalizeFn;
 }) {
   const [content, setContent] = useState('');
   const saveFeedback = useSaveAnalitricsCatalogFeedback(conversationId);
@@ -671,7 +720,7 @@ function CatalogFeedbackCard({
         sourceFileId: source?.fileId,
         sourceFilename: source?.filename,
         step: step.step,
-        label: step.label,
+        label: localize(step.labelKey),
         content,
       },
       {
@@ -689,22 +738,29 @@ function CatalogFeedbackCard({
           {step.step}
         </div>
         <div className="min-w-0 flex-1">
-          <h4 className="text-sm font-medium text-text-primary">{step.label}</h4>
-          <p className="mt-1 text-xs text-text-secondary">{step.prompt}</p>
+          <h4 className="text-sm font-medium text-text-primary">{localize(step.labelKey)}</h4>
+          <p className="mt-1 text-xs text-text-secondary">{localize(step.promptKey)}</p>
           {!expanded && (
             <div className="mt-2">
-              <FeedbackHistory items={saved} />
+              <FeedbackHistory items={saved} localize={localize} />
             </div>
           )}
         </div>
         {saved.length > 0 && (
-          <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-green-500" aria-label="Con aportes guardados" />
+          <CheckCircle2
+            className="mt-0.5 size-4 shrink-0 text-green-500"
+            aria-label={localize('com_analitrics_has_saved_contributions')}
+          />
         )}
         <button
           type="button"
           className="rounded-md p-1.5 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus:outline-none focus:ring-2 focus:ring-border-heavy"
           onClick={onToggle}
-          aria-label={expanded ? `Cerrar edición de ${step.label}` : `Editar ${step.label}`}
+          aria-label={
+            expanded
+              ? localize('com_analitrics_close_edit', { label: localize(step.labelKey) })
+              : localize('com_analitrics_edit_label', { label: localize(step.labelKey) })
+          }
           aria-expanded={expanded}
         >
           {expanded ? <X className="size-4" aria-hidden="true" /> : <PencilLine className="size-4" aria-hidden="true" />}
@@ -715,13 +771,17 @@ function CatalogFeedbackCard({
           <textarea
             className="min-h-20 w-full resize-none rounded-lg border border-border-light bg-transparent px-3 py-2 text-sm text-text-primary outline-none transition-colors placeholder:text-text-tertiary focus:border-border-heavy disabled:cursor-not-allowed disabled:opacity-60"
             value={content}
-            placeholder={step.placeholder}
+            placeholder={localize(step.placeholderKey)}
             disabled={disabled || saveFeedback.isLoading}
             onChange={(event) => setContent(event.target.value)}
           />
           <div className="mt-2 flex items-center justify-between gap-2">
             <span className="text-xs text-text-secondary">
-              {saveFeedback.isError ? 'No se pudo guardar.' : saved.length > 0 ? `${saved.length} aporte(s)` : 'Opcional'}
+              {saveFeedback.isError
+                ? localize('com_analitrics_save_error')
+                : saved.length > 0
+                  ? localize('com_analitrics_saved_contributions', { count: saved.length })
+                  : localize('com_analitrics_optional')}
             </span>
             <button
               type="button"
@@ -730,12 +790,12 @@ function CatalogFeedbackCard({
               onClick={handleSave}
             >
               <PencilLine className="size-3.5" aria-hidden="true" />
-              Guardar
+              {localize('com_analitrics_save')}
             </button>
           </div>
           {saved.length > 0 && (
             <div className="mt-3">
-              <FeedbackHistory items={saved} />
+              <FeedbackHistory items={saved} localize={localize} />
             </div>
           )}
         </div>
@@ -744,16 +804,21 @@ function CatalogFeedbackCard({
   );
 }
 
-export default function AnalitricsContextPanel({ conversationId }: AnalitricsContextPanelProps) {
+export default function AnalitricsContextPanel({
+  conversationId,
+  onCollapsePanel,
+}: AnalitricsContextPanelProps) {
+  const localize = useLocalize();
   const navigate = useNavigate();
   const hasConversation = Boolean(conversationId && conversationId !== Constants.NEW_CONVO);
   const { data, error, isFetching, refetch } = useAnalitricsContext(conversationId);
-  const createDashboard = useCreateAnalitricsDashboardFromAnalysis();
+  const dashboardsQuery = useAnalitricsDashboards();
+  const createDashboard = useCreateAnalitricsDashboard();
   const files = data?.files ?? [];
   const tables = (data?.tables ?? []).filter((table) => !table.systemTable);
   const profiles = (data?.profiles ?? []).filter((profile) => !profile.system_table);
-  const datasets = buildDatasetInsights(tables, profiles);
-  const feedbackSources = buildFeedbackSources(files);
+  const datasets = buildDatasetInsights(tables, profiles, localize);
+  const feedbackSources = buildFeedbackSources(files, localize);
   const [selectedFileId, setSelectedFileId] = useState('');
   const [activeView, setActiveView] = useState<PanelView>('general');
   const [activeFeedbackStep, setActiveFeedbackStep] = useState(0);
@@ -772,13 +837,33 @@ export default function AnalitricsContextPanel({ conversationId }: AnalitricsCon
     ? suggestedFeedback
     : null;
   const hasProfile = Boolean(data?.found && datasets.length > 0);
+  const hasPendingClarification = Boolean(data?.pendingClarification);
+  const hasCompletedAnalysis = (data?.recentAnalysisStates ?? []).some(isDashboardReadyState);
+  const canCreateDashboard = hasProfile && !hasPendingClarification && hasCompletedAnalysis;
+  const dashboardReadinessMessage = hasPendingClarification
+    ? localize('com_analitrics_dashboard_waiting_clarification')
+    : !hasCompletedAnalysis
+      ? localize('com_analitrics_dashboard_requires_analysis')
+      : '';
   const metricCandidates = selectedDataset?.metricCandidates ?? [];
   const segmentCandidates = selectedDataset?.segmentCandidates ?? [];
   const dateCandidates = selectedDataset?.dateCandidates ?? [];
-  const executiveKpis = buildExecutiveKpis(selectedDataset);
-  const executiveSummary = buildExecutiveSummary(selectedDataset, sourceFeedback);
+  const executiveKpis = buildExecutiveKpis(selectedDataset, localize);
+  const executiveSummary = buildExecutiveSummary(selectedDataset, sourceFeedback, localize);
   const latestConcepts = latestFeedbackForSteps(sourceFeedback, [1])?.content || '';
   const latestDefinitions = latestFeedbackForSteps(sourceFeedback, [2, 4, 6])?.content || '';
+  const linkedDashboard = useMemo(
+    () =>
+      (dashboardsQuery.data?.dashboards ?? []).find(
+        (dashboard) => dashboard.conversationId === conversationId,
+      ),
+    [conversationId, dashboardsQuery.data?.dashboards],
+  );
+  const [createdDashboardId, setCreatedDashboardId] = useState('');
+  useEffect(() => {
+    setCreatedDashboardId('');
+  }, [conversationId]);
+  const effectiveDashboardId = linkedDashboard?.dashboardId || createdDashboardId;
 
   const handleCreateDashboard = () => {
     if (!conversationId || createDashboard.isLoading) {
@@ -790,7 +875,8 @@ export default function AnalitricsContextPanel({ conversationId }: AnalitricsCon
         onSuccess: (payload) => {
           const dashboardId = payload.dashboard?.dashboardId;
           if (dashboardId) {
-            navigate(`/dashboards/${dashboardId}`);
+            setCreatedDashboardId(dashboardId);
+            dashboardsQuery.refetch();
           }
         },
       },
@@ -806,41 +892,76 @@ export default function AnalitricsContextPanel({ conversationId }: AnalitricsCon
       <div className="flex items-start justify-between gap-3 border-b border-border-light px-4 py-3">
         <div className="min-w-0">
           <h2 className="text-sm font-semibold">
-            {activeView === 'general' ? 'Resumen ejecutivo' : 'Catálogo'}
+            {activeView === 'general'
+              ? localize('com_analitrics_context_general')
+              : localize('com_analitrics_context_catalog')}
           </h2>
           <p className="mt-0.5 text-xs text-text-secondary">
-            {isFetching ? 'Actualizando...' : data?.updatedAt ? 'Lectura actualizada' : 'Sin lectura'}
+            {isFetching
+              ? localize('com_analitrics_context_updating')
+              : data?.updatedAt
+                ? localize('com_analitrics_context_updated')
+                : localize('com_analitrics_context_no_reading')}
           </p>
         </div>
-        <button
-          type="button"
-          className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus:outline-none focus:ring-2 focus:ring-border-heavy"
-          onClick={() => refetch()}
-          aria-label="Actualizar resumen ejecutivo"
-        >
-          <RefreshCw className={cn('size-4', isFetching && 'animate-spin')} aria-hidden="true" />
-        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          {onCollapsePanel && (
+            <TooltipAnchor
+              side="left"
+              description={localize('com_analitrics_close_side_panel')}
+              render={
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-9 w-9 rounded-lg"
+                  aria-label={localize('com_analitrics_close_side_panel')}
+                  aria-expanded={true}
+                  onClick={onCollapsePanel}
+                >
+                  <Sidebar aria-hidden="true" className="h-5 w-5 text-text-primary" />
+                </Button>
+              }
+            />
+          )}
+          <TooltipAnchor
+            side="left"
+            description={localize('com_analitrics_context_refresh')}
+            render={
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="h-9 w-9 rounded-lg"
+                onClick={() => refetch()}
+                aria-label={localize('com_analitrics_context_refresh')}
+              >
+                <RefreshCw className={cn('size-4', isFetching && 'animate-spin')} aria-hidden="true" />
+              </Button>
+            }
+          />
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
-        <ViewSwitch activeView={activeView} onChange={setActiveView} />
+        <ViewSwitch activeView={activeView} onChange={setActiveView} localize={localize} />
 
         {error != null && (
           <div className="flex gap-2 rounded-lg border border-status-error-border bg-surface-secondary p-3 text-sm text-text-primary">
             <AlertCircle className="mt-0.5 size-4 shrink-0 text-status-error" aria-hidden="true" />
-            <span>No se pudo cargar el resumen.</span>
+            <span>{localize('com_analitrics_context_load_error')}</span>
           </div>
         )}
 
         {!hasConversation && (
           <div className="rounded-lg border border-border-light bg-surface-secondary p-3 text-sm text-text-secondary">
-            El resumen aparecerá cuando exista una conversación con datos analíticos.
+            {localize('com_analitrics_context_waiting')}
           </div>
         )}
 
         {hasConversation && !hasProfile && error == null && (
           <div className="rounded-lg border border-border-light bg-surface-secondary p-3 text-sm text-text-secondary">
-            Aún no hay lectura gerencial activa.
+            {localize('com_analitrics_context_no_active_reading')}
           </div>
         )}
 
@@ -850,51 +971,79 @@ export default function AnalitricsContextPanel({ conversationId }: AnalitricsCon
               sources={feedbackSources}
               selectedFileId={effectiveSelectedFileId}
               onChange={setSelectedFileId}
+              localize={localize}
             />
 
-            <InsightSection icon={FileSpreadsheet} title="Lectura ejecutiva">
+            <InsightSection icon={FileSpreadsheet} title={localize('com_analitrics_executive_reading')}>
               <p className="text-xs leading-relaxed">{executiveSummary}</p>
             </InsightSection>
 
             <button
               type="button"
-              className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-border-light bg-surface-secondary px-3 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!hasProfile || createDashboard.isLoading}
-              onClick={handleCreateDashboard}
+              className={cn(
+                'inline-flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-semibold shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                effectiveDashboardId
+                  ? 'border border-border-medium bg-surface-secondary text-text-primary hover:bg-surface-hover'
+                  : 'border border-transparent bg-text-primary text-surface-primary hover:bg-text-primary/90',
+              )}
+              disabled={!effectiveDashboardId && (!canCreateDashboard || createDashboard.isLoading)}
+              onClick={() => {
+                if (effectiveDashboardId) {
+                  navigate(`/dashboards/${effectiveDashboardId}`);
+                  return;
+                }
+                handleCreateDashboard();
+              }}
             >
               <LayoutDashboard className="size-4" aria-hidden="true" />
-              {createDashboard.isLoading ? 'Creando dashboard...' : 'Crear dashboard'}
+              {createDashboard.isLoading
+                ? localize('com_analitrics_creating_dashboard')
+                : effectiveDashboardId
+                  ? localize('com_analitrics_open_dashboard')
+                  : localize('com_analitrics_create_dashboard')}
             </button>
+            {!effectiveDashboardId && dashboardReadinessMessage && (
+              <p className="text-xs leading-relaxed text-text-secondary">{dashboardReadinessMessage}</p>
+            )}
+            {effectiveDashboardId && (
+              <div className="rounded-lg border border-border-light bg-surface-secondary p-3 text-xs text-text-secondary">
+                <div className="flex items-center gap-2 text-text-primary">
+                  <CheckCircle2 className="size-4 text-green-500" aria-hidden="true" />
+                  <span className="font-medium">{localize('com_analitrics_dashboard_created')}</span>
+                </div>
+                <p className="mt-1">{localize('com_analitrics_dashboard_created_detail')}</p>
+              </div>
+            )}
             {createDashboard.isError && (
               <p className="text-xs text-status-error">
-                No se pudo crear el dashboard.
+                {localize('com_analitrics_dashboard_create_error')}
               </p>
             )}
 
             <div className="grid grid-cols-2 gap-2">
               {executiveKpis.map((kpi) => (
-                <KpiCard key={kpi.key} kpi={kpi} />
+                <KpiCard key={kpi.key} kpi={kpi} localize={localize} />
               ))}
             </div>
 
-            <InsightSection icon={Sigma} title="Indicadores sugeridos">
+            <InsightSection icon={Sigma} title={localize('com_analitrics_suggested_metrics')}>
               <ChipList
                 items={metricCandidates}
-                empty="Aún no se detectaron indicadores numéricos relevantes."
+                empty={localize('com_analitrics_no_suggested_metrics')}
               />
             </InsightSection>
 
-            <InsightSection icon={Tags} title="Dimensiones de análisis">
-              <ChipList items={segmentCandidates} empty="Aún no se detectaron cortes de negocio." />
+            <InsightSection icon={Tags} title={localize('com_analitrics_analysis_dimensions')}>
+              <ChipList items={segmentCandidates} empty={localize('com_analitrics_no_analysis_dimensions')} />
             </InsightSection>
 
-            <InsightSection icon={CalendarDays} title="Lectura temporal">
-              <ChipList items={dateCandidates} empty="No se detectaron campos de fecha." />
+            <InsightSection icon={CalendarDays} title={localize('com_analitrics_temporal_reading')}>
+              <ChipList items={dateCandidates} empty={localize('com_analitrics_no_temporal_fields')} />
             </InsightSection>
 
             {data?.cacheHits != null && data.cacheHits > 0 && (
               <div className="rounded-lg border border-border-light bg-surface-secondary p-3 text-xs text-text-secondary">
-                Lectura reutilizada {formatNumber(data.cacheHits)} veces en este chat.
+                {localize('com_analitrics_cache_reused', { count: formatNumber(data.cacheHits) })}
               </div>
             )}
           </>
@@ -904,13 +1053,14 @@ export default function AnalitricsContextPanel({ conversationId }: AnalitricsCon
               sources={feedbackSources}
               selectedFileId={effectiveSelectedFileId}
               onChange={setSelectedFileId}
+              localize={localize}
             />
 
             {sourceSuggestedFeedback?.content && (
-              <InsightSection icon={AlertCircle} title="Corrección sugerida">
+              <InsightSection icon={AlertCircle} title={localize('com_analitrics_suggested_correction')}>
                 <div className="space-y-3">
                   <p className="text-xs leading-relaxed text-text-secondary">
-                    El agente detectó una corrección que puede mejorar futuras consultas.
+                    {localize('com_analitrics_suggested_correction_detail')}
                   </p>
                   <p className="rounded-lg border border-border-light bg-surface-primary-alt p-3 text-xs text-text-primary">
                     {sourceSuggestedFeedback.content}
@@ -921,21 +1071,27 @@ export default function AnalitricsContextPanel({ conversationId }: AnalitricsCon
                     onClick={() => setActiveFeedbackStep(Number(sourceSuggestedFeedback.step || 5))}
                   >
                     <PencilLine className="size-3.5" aria-hidden="true" />
-                    Revisar y guardar
+                    {localize('com_analitrics_review_and_save')}
                   </button>
                 </div>
               </InsightSection>
             )}
 
-            <InsightSection icon={PencilLine} title="Catálogo enriquecido">
+            <InsightSection icon={PencilLine} title={localize('com_analitrics_enriched_catalog')}>
               <div className="space-y-3">
                 <div>
-                  <p className="text-xs font-medium text-text-primary">Conceptos de negocio</p>
-                  <p className="mt-1 line-clamp-3 text-xs">{compactText(latestConcepts)}</p>
+                  <p className="text-xs font-medium text-text-primary">{localize('com_analitrics_business_concepts')}</p>
+                  <p className="mt-1 line-clamp-3 text-xs">
+                    {compactText(latestConcepts, localize('com_analitrics_no_definition'))}
+                  </p>
                 </div>
                 <div>
-                  <p className="text-xs font-medium text-text-primary">Definiciones y reglas activas</p>
-                  <p className="mt-1 line-clamp-3 text-xs">{compactText(latestDefinitions)}</p>
+                  <p className="text-xs font-medium text-text-primary">
+                    {localize('com_analitrics_active_definitions_rules')}
+                  </p>
+                  <p className="mt-1 line-clamp-3 text-xs">
+                    {compactText(latestDefinitions, localize('com_analitrics_no_definition'))}
+                  </p>
                 </div>
                 <div className="flex items-center gap-2 text-xs">
                   <CheckCircle2
@@ -946,16 +1102,17 @@ export default function AnalitricsContextPanel({ conversationId }: AnalitricsCon
                     aria-hidden="true"
                   />
                   <span>
-                    {formatNumber(sourceFeedback.length)} aporte(s) guardado(s) para este archivo.
+                    {localize('com_analitrics_saved_contributions_for_file', {
+                      count: formatNumber(sourceFeedback.length),
+                    })}
                   </span>
                 </div>
               </div>
             </InsightSection>
 
-            <InsightSection icon={FileSpreadsheet} title="Editar catálogo">
+            <InsightSection icon={FileSpreadsheet} title={localize('com_analitrics_edit_catalog')}>
               <p className="mb-3 text-xs">
-                Orden sugerido: completa de arriba hacia abajo cuando tengas claridad. No es obligatorio
-                llenar todo para continuar el análisis.
+                {localize('com_analitrics_edit_catalog_order')}
               </p>
               <div className="space-y-3">
                 {feedbackSteps.map((step) => (
@@ -971,6 +1128,7 @@ export default function AnalitricsContextPanel({ conversationId }: AnalitricsCon
                     suggestedContent={
                       sourceSuggestedFeedback?.step === step.step ? sourceSuggestedFeedback.content : undefined
                     }
+                    localize={localize}
                   />
                 ))}
               </div>

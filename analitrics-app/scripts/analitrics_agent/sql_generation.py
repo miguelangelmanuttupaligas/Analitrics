@@ -86,6 +86,7 @@ class LlmSqlGenerator:
                     profiles,
                     catalog_feedback,
                     analytical_context,
+                    (analytical_context or {}).get("derived_metrics") or [],
                 ),
                 "conversation_context": context_messages or [],
                 "analytical_context": self._context_compactor.for_sql(analytical_context or {}),
@@ -121,6 +122,7 @@ class LlmSqlGenerator:
                     profiles,
                     catalog_feedback,
                     analytical_context,
+                    (analytical_context or {}).get("derived_metrics") or [],
                 ),
                 "conversation_context": context_messages or [],
                 "analytical_context": self._context_compactor.for_sql(analytical_context or {}),
@@ -147,11 +149,13 @@ class SqlExplorationTools:
         workspace: Any,
         profiles: list[dict[str, Any]],
         catalog_feedback: list[dict[str, Any]] | None = None,
+        derived_metrics: list[dict[str, Any]] | None = None,
         validator: SqlReadOnlyValidator | None = None,
     ) -> None:
         self._workspace = workspace
         self._profiles = [profile for profile in profiles if not profile.get("system_table")]
         self._catalog_feedback = [item for item in (catalog_feedback or []) if str(item.get("content") or "").strip()]
+        self._derived_metrics = [item for item in (derived_metrics or []) if item.get("name")]
         self._validator = validator or SqlReadOnlyValidator()
         self._known_tables = [str(profile.get("table")) for profile in profiles if profile.get("table")]
 
@@ -167,6 +171,11 @@ class SqlExplorationTools:
             "table_count": len(self._profiles),
             "table_inventory": [self._table_summary(profile) for profile in self._profiles[:8]],
             "catalog_summary": self._catalog_summary(),
+            "derived_metrics_summary": {
+                "available": bool(self._derived_metrics),
+                "metric_count": len(self._derived_metrics),
+                "names": [str(item.get("name")) for item in self._derived_metrics[:12]],
+            },
             "tool_policy": {
                 "max_tool_calls": int(env("ANALITRICS_SQL_TOOL_MAX_CALLS", "8")),
                 "sample_rows_limit": 5,
@@ -196,6 +205,8 @@ class SqlExplorationTools:
             return self._resolve_business_term(str(args.get("term") or ""))
         if action == "get_business_rules":
             return self._get_business_rules()
+        if action == "list_derived_metrics":
+            return self._list_derived_metrics()
         raise RuntimeError(f"Unsupported SQL exploration action: {action}")
 
     def _catalog_summary(self) -> dict[str, Any]:
@@ -258,6 +269,23 @@ class SqlExplorationTools:
         return {
             "rules": rules[:12],
             "rule_count": len(rules),
+        }
+
+    def _list_derived_metrics(self) -> dict[str, Any]:
+        return {
+            "metrics": [
+                {
+                    "source_file_id": item.get("source_file_id"),
+                    "source_filename": item.get("source_filename"),
+                    "name": item.get("name"),
+                    "label": item.get("label"),
+                    "definition": item.get("definition") or {},
+                    "updated_at": item.get("updated_at"),
+                }
+                for item in self._derived_metrics[:20]
+            ],
+            "metric_count": len(self._derived_metrics),
+            "instruction": "Use these definitions as reusable business metrics. Validate referenced columns before final SQL.",
         }
 
     def _catalog_entry(self, item: dict[str, Any], score: int | None = None) -> dict[str, Any]:
@@ -425,7 +453,13 @@ class ToolAssistedSqlGenerator:
     ) -> SqlGenerationResult:
         if workspace is None:
             raise RuntimeError("Tool-assisted SQL generation requires an initialized DuckDB workspace")
-        tools = SqlExplorationTools(workspace, profiles, catalog_feedback, self._validator)
+        tools = SqlExplorationTools(
+            workspace,
+            profiles,
+            catalog_feedback,
+            (analytical_context or {}).get("derived_metrics") or [],
+            self._validator,
+        )
         tool_results: list[dict[str, Any]] = self._seed_tool_results_from_cache(analytical_context or {})
         consolidation_requested = self._consolidation_requested(question, analytical_context or {})
         final_sql_failures = 0

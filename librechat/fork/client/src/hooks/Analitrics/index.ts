@@ -2,7 +2,8 @@ export { default as useAnalitricsContext, useSaveAnalitricsCatalogFeedback } fro
 export {
   useAnalitricsDashboard,
   useAnalitricsDashboards,
-  useCreateAnalitricsDashboardFromAnalysis,
+  useApplyAnalitricsDashboardInstruction,
+  useCreateAnalitricsDashboard,
   useRunAnalitricsDashboardView,
 } from './useAnalitricsDashboards';
 export type {

@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
+import { useLocalize } from '~/hooks';
 
 type ChartPoint = {
   label: string;
@@ -68,9 +69,10 @@ const normalizePoints = (points?: ChartPoint[]) =>
     .slice(0, 12);
 
 function EmptyChart() {
+  const localize = useLocalize();
   return (
     <div className="my-3 rounded-lg border border-border-light bg-surface-primary p-3 text-sm text-text-secondary">
-      No hay datos suficientes para renderizar el gráfico.
+      {localize('com_analitrics_chart_not_enough_data_render')}
     </div>
   );
 }
@@ -130,19 +132,20 @@ function ChartShell({
   onZoomChange: (zoom: number) => void;
   children: ReactNode;
 }) {
+  const localize = useLocalize();
   return (
     <div className="relative my-3 rounded-lg border border-border-light bg-surface-primary p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="truncate text-sm font-medium text-text-primary">{title}</div>
           <div className="text-xs text-text-secondary">
-            {metrics.length > 1 ? 'Selecciona la métrica para comparar.' : metricLabel(selectedMetric)}
+            {metrics.length > 1 ? localize('com_analitrics_chart_select_metric') : metricLabel(selectedMetric)}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
           {metrics.length > 1 && (
             <label className="flex items-center gap-1">
-              <span>Métrica</span>
+              <span>{localize('com_analitrics_chart_metric')}</span>
               <select
                 className="rounded-md border border-border-light bg-surface-secondary px-2 py-1 text-text-primary outline-none"
                 value={selectedMetric}
@@ -157,19 +160,19 @@ function ChartShell({
             </label>
           )}
           <label className="flex items-center gap-1">
-            <span>Orden</span>
+            <span>{localize('com_analitrics_chart_order')}</span>
             <select
               className="rounded-md border border-border-light bg-surface-secondary px-2 py-1 text-text-primary outline-none"
               value={sortMode}
               onChange={(event) => onSortChange(event.target.value as SortMode)}
             >
-              <option value="original">Original</option>
-              <option value="desc">Mayor</option>
-              <option value="asc">Menor</option>
+              <option value="original">{localize('com_analitrics_chart_order_original')}</option>
+              <option value="desc">{localize('com_analitrics_chart_order_desc')}</option>
+              <option value="asc">{localize('com_analitrics_chart_order_asc')}</option>
             </select>
           </label>
           <label className="flex items-center gap-1">
-            <span>Zoom</span>
+            <span>{localize('com_analitrics_chart_zoom')}</span>
             <select
               className="rounded-md border border-border-light bg-surface-secondary px-2 py-1 text-text-primary outline-none"
               value={String(zoom)}
@@ -255,11 +258,13 @@ function LineChart({
   selectedMetric,
   zoom,
   onTooltip,
+  lineChartLabel,
 }: {
   points: ChartPoint[];
   selectedMetric: string;
   zoom: number;
   onTooltip: (tooltip: TooltipState) => void;
+  lineChartLabel: string;
 }) {
   const width = 720;
   const height = 280;
@@ -284,7 +289,7 @@ function LineChart({
         className="h-auto"
         style={{ width: `${zoom * 100}%`, minWidth: '100%' }}
         role="img"
-        aria-label="Gráfico de línea"
+        aria-label={lineChartLabel}
         onMouseLeave={() => onTooltip(null)}
       >
         <line x1={padX} y1={height - padY} x2={width - padX} y2={height - padY} className="stroke-border-light" />
@@ -322,6 +327,7 @@ function LineChart({
 }
 
 export default function AnalitricsChart({ output }: { output?: string | null }) {
+  const localize = useLocalize();
   const payload = parsePayload(output);
   const rawPoints = normalizePoints(payload?.points);
   const metrics = useMemo(() => {
@@ -347,7 +353,7 @@ export default function AnalitricsChart({ output }: { output?: string | null }) 
 
   return (
     <ChartShell
-      title={payload.title || 'Gráfico'}
+      title={payload.title || localize('com_analitrics_dashboard_chart_fallback')}
       metrics={metrics}
       selectedMetric={effectiveMetric}
       sortMode={sortMode}
@@ -358,7 +364,13 @@ export default function AnalitricsChart({ output }: { output?: string | null }) 
       onZoomChange={setZoom}
     >
       {payload.chart_type === 'line' ? (
-        <LineChart points={points} selectedMetric={effectiveMetric} zoom={zoom} onTooltip={setTooltip} />
+        <LineChart
+          points={points}
+          selectedMetric={effectiveMetric}
+          zoom={zoom}
+          onTooltip={setTooltip}
+          lineChartLabel={localize('com_analitrics_chart_line_label')}
+        />
       ) : (
         <BarChart
           points={points}

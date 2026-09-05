@@ -12,6 +12,7 @@ class SchemaContextBuilder:
         files: list[FileMetadata],
         profiles: list[dict[str, Any]],
         catalog_feedback: list[dict[str, Any]] | None = None,
+        derived_metrics: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         compact_profiles = [
             {
@@ -37,6 +38,7 @@ class SchemaContextBuilder:
             ],
             "duckdb_schema": compact_profiles,
             "business_feedback": self._compact_feedback(catalog_feedback or []),
+            "derived_metrics": self._compact_derived_metrics(derived_metrics or []),
         }
 
     def build_json(
@@ -53,10 +55,11 @@ class SchemaContextBuilder:
         profiles: list[dict[str, Any]],
         catalog_feedback: list[dict[str, Any]] | None = None,
         analytical_context: dict[str, Any] | None = None,
+        derived_metrics: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         plan = (analytical_context or {}).get("conversation_plan") or {}
         if plan.get("confidence") == "low":
-            return self.build(files, profiles, catalog_feedback)
+            return self.build(files, profiles, catalog_feedback, derived_metrics)
         compact_profiles = [
             {
                 "table": profile["table"],
@@ -79,6 +82,7 @@ class SchemaContextBuilder:
             ],
             "duckdb_schema": compact_profiles,
             "business_feedback": self._compact_feedback(catalog_feedback or []),
+            "derived_metrics": self._compact_derived_metrics(derived_metrics or []),
             "context_policy": {
                 "mode": "planner_compact",
                 "fallback": "full_context_when_confidence_low",
@@ -97,6 +101,19 @@ class SchemaContextBuilder:
             for item in feedback
             if str(item.get("content") or "").strip()
         ]
+
+    def _compact_derived_metrics(self, metrics: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "source_file_id": item.get("source_file_id") or item.get("sourceFileId"),
+                "source_filename": item.get("source_filename") or item.get("sourceFilename"),
+                "name": item.get("name"),
+                "label": item.get("label"),
+                "definition": item.get("definition") or {},
+            }
+            for item in metrics
+            if item.get("name") and isinstance(item.get("definition"), dict)
+        ][:20]
 
     def _compact_column(self, column: dict[str, Any]) -> dict[str, Any]:
         sample_values = column.get("sample_values") or []

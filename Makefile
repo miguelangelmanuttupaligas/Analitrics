@@ -186,8 +186,14 @@ prepare-dirs:
 	if [[ "$$(stat -c '%u:%g' /var/analitrics/analytics/postgresql)" != "70:70" ]]; then \
 		sudo chown -R 70:70 /var/analitrics/analytics/postgresql; \
 	fi; \
+	if [[ "$$(stat -c '%u:%g' /var/analitrics/storage/data)" != "10001:10001" ]]; then \
+		sudo chown -R 10001:10001 /var/analitrics/storage/data; \
+	fi; \
+	if [[ "$$(stat -c '%u:%g' /var/analitrics/storage/logs)" != "10001:10001" ]]; then \
+		sudo chown -R 10001:10001 /var/analitrics/storage/logs; \
+	fi; \
 	local_owner="$$(id -u):$$(id -g)"; \
-	for dir in /var/analitrics/librechat/{uploads,logs,skill,data,images,certs} /var/analitrics/storage/{data,logs} /var/analitrics/analytics/cache; do \
+	for dir in /var/analitrics/librechat/{uploads,logs,skill,data,images,certs} /var/analitrics/analytics/cache; do \
 		if [[ "$$(stat -c '%u:%g' "$$dir")" != "$$local_owner" ]]; then \
 			sudo chown -R "$$local_owner" "$$dir"; \
 		fi; \

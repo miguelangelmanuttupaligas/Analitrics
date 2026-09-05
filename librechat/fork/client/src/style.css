@@ -2467,41 +2467,46 @@ html[data-input-modality='keyboard']
 
 @keyframes shimmer {
   0% {
-    background-position: 200% 0;
+    transform: translateX(-120%);
   }
   100% {
-    background-position: -200% 0;
+    transform: translateX(120%);
   }
 }
 
 .shimmer {
   display: inline-block;
   position: relative;
-  background: linear-gradient(
-    90deg,
-    rgb(33, 33, 33) 25%,
-    rgba(129, 130, 134, 0.18) 50%,
-    rgb(33, 33, 33) 75%
-  );
-  background-size: 200% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: shimmer 4s linear infinite;
+  overflow: hidden;
+  color: inherit;
+  -webkit-text-fill-color: currentColor;
 }
 
-.dark .shimmer {
+.shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
   background: linear-gradient(
     90deg,
-    rgba(255, 255, 255, 0.8) 25%,
-    rgba(179, 179, 179, 0.25) 50%,
-    rgba(255, 255, 255, 0.8) 75%
+    transparent 0%,
+    rgba(255, 255, 255, 0.03) 35%,
+    rgba(255, 255, 255, 0.34) 50%,
+    rgba(255, 255, 255, 0.03) 65%,
+    transparent 100%
   );
-  background-size: 200% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: shimmer 4s linear infinite;
+  animation: shimmer 2.8s ease-in-out infinite;
+}
+
+.dark .shimmer::after {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.02) 35%,
+    rgba(255, 255, 255, 0.18) 50%,
+    rgba(255, 255, 255, 0.02) 65%,
+    transparent 100%
+  );
 }
 
 .sharepoint-picker-bg {

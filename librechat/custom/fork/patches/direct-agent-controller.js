@@ -584,6 +584,29 @@ async function runAnalitricsDirectController(req, res, initializeClient, addTitl
     });
   };
 
+  const handleAnalitricsStreamEvent = async (event) => {
+    if (!event || typeof event !== 'object') {
+      return;
+    }
+    if (event.type === 'progress') {
+      await emitProgress(event.message);
+    } else if (event.type === 'token') {
+      answer += event.delta || '';
+      hasAnswerTokens = true;
+      await emitTextDelta(event.delta || '');
+    } else if (event.type === 'final') {
+      const payload = event.payload || {};
+      finalPayload = payload;
+      if (!hasAnswerTokens && typeof payload.answer === 'string') {
+        answer += payload.answer;
+        hasAnswerTokens = true;
+        await emitTextBlock(payload.answer);
+      }
+    } else if (event.type === 'error') {
+      throw new Error(event.error || 'Analitrics agent stream failed');
+    }
+  };
+
   if (existingUserMessage && existingResponseMessage) {
     const conversation =
       (await getConvo(userId, conversationId).catch(() => null)) || {
@@ -697,27 +720,23 @@ async function runAnalitricsDirectController(req, res, initializeClient, addTitl
           streamDone = true;
           break;
         }
-        const event = JSON.parse(data);
-        if (event.type === 'progress') {
-          await emitProgress(event.message);
-        } else if (event.type === 'token') {
-          answer += event.delta || '';
-          hasAnswerTokens = true;
-          await emitTextDelta(event.delta || '');
-        } else if (event.type === 'final') {
-          const payload = event.payload || {};
-          finalPayload = payload;
-          if (!hasAnswerTokens && typeof payload.answer === 'string') {
-            answer += payload.answer;
-            hasAnswerTokens = true;
-            await emitTextBlock(payload.answer);
-          }
-        } else if (event.type === 'error') {
-          throw new Error(event.error || 'Analitrics agent stream failed');
-        }
+        await handleAnalitricsStreamEvent(JSON.parse(data));
       }
       if (streamDone) {
         break;
+      }
+    }
+    const trailing = buffer.trim();
+    if (trailing) {
+      for (const frame of trailing.split('\\n\\n')) {
+        const line = frame.split('\\n').find((item) => item.startsWith('data: '));
+        if (!line) {
+          continue;
+        }
+        const data = line.slice(6);
+        if (data !== '[DONE]') {
+          await handleAnalitricsStreamEvent(JSON.parse(data));
+        }
       }
     }
 

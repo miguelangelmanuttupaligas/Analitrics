@@ -23,6 +23,15 @@ make storage-metadata
 make analitrics-build
 ```
 
+## Despliegue
+
+Local usa `analitrics-test.com:3443`; producción usa `analitrics.com` sin puerto público. Las plantillas no se mezclan:
+
+- desarrollo: `keycloak/.env.example` y `librechat/custom/.env.example`;
+- VM: `keycloak/.env.production.example` y `librechat/custom/.env.production.example`.
+
+La guía completa para GitHub, DNS, TLS, Keycloak y el primer arranque está en [PRODUCCION_ANALITRICS.md](./docs/PRODUCCION_ANALITRICS.md).
+
 Para detener:
 
 ```bash

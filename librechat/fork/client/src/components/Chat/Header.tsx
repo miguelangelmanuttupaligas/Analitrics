@@ -1,25 +1,15 @@
-import { memo, useMemo } from 'react';
+import { memo } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useParams } from 'react-router-dom';
-import {
-  getConfigDefaults,
-  Constants,
-  PermissionTypes,
-  Permissions,
-} from 'librechat-data-provider';
-import { OpenSidebar, PresetsMenu, NewChat, HeaderMenu } from './Menus';
-import ModelSelector from './Menus/Endpoints/ModelSelector';
+import { Constants, PermissionTypes, Permissions } from 'librechat-data-provider';
+import { OpenSidebar, NewChat, HeaderMenu } from './Menus';
 import { useGetStartupConfig } from '~/data-provider';
 import ExportAndShareMenu from './ExportAndShareMenu';
 import SubagentThreadLink from './SubagentThreadLink';
-import BookmarkMenu from './Menus/BookmarkMenu';
 import { TemporaryChat } from './TemporaryChat';
-import AddMultiConvo from './AddMultiConvo';
 import { useHasAccess } from '~/hooks';
 import { cn } from '~/utils';
 import store from '~/store';
-
-const defaultInterface = getConfigDefaults().interface;
 
 /**
  * Three zones in a single DOM order that serves both layouts: hidden items
@@ -29,7 +19,6 @@ const defaultInterface = getConfigDefaults().interface;
  */
 function Header({
   parentConversationId,
-  readOnly = false,
 }: {
   parentConversationId?: string;
   readOnly?: boolean;
@@ -43,21 +32,6 @@ function Header({
    *  conversation has no id in the route yet, so absence counts as new too. */
   const { conversationId: routeConversationId } = useParams();
   const isNewChat = routeConversationId == null || routeConversationId === Constants.NEW_CONVO;
-
-  const interfaceConfig = useMemo(
-    () => startupConfig?.interface ?? defaultInterface,
-    [startupConfig],
-  );
-
-  const hasAccessToBookmarks = useHasAccess({
-    permissionType: PermissionTypes.BOOKMARKS,
-    permission: Permissions.USE,
-  });
-
-  const hasAccessToMultiConvo = useHasAccess({
-    permissionType: PermissionTypes.MULTI_CONVO,
-    permission: Permissions.USE,
-  });
 
   const hasAccessToTemporaryChat = useHasAccess({
     permissionType: PermissionTypes.TEMPORARY_CHAT,
@@ -85,20 +59,6 @@ function Header({
             relation="parent"
             labelClassName="hidden lg:inline"
           />
-        )}
-        {!readOnly && <ModelSelector startupConfig={startupConfig} />}
-        {!readOnly && interfaceConfig.presets === true && interfaceConfig.modelSelect === true && (
-          <PresetsMenu />
-        )}
-        {hasAccessToBookmarks === true && (
-          <div className="hidden items-center md:flex">
-            <BookmarkMenu />
-          </div>
-        )}
-        {hasAccessToMultiConvo === true && (
-          <div className="hidden items-center md:flex">
-            <AddMultiConvo />
-          </div>
         )}
       </div>
 

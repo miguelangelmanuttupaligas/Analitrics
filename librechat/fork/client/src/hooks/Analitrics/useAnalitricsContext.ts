@@ -72,6 +72,22 @@ export type AnalitricsSuggestedFeedback = {
   reason?: string;
 };
 
+export type AnalitricsAnalysisState = {
+  state_id?: string;
+  intent?: string | null;
+  metric?: string | null;
+  dimensions?: string[];
+  dataset?: Record<string, unknown>;
+  last_sql?: string | null;
+  row_count?: number;
+  state?: {
+    confidence?: string | null;
+    conversation_plan?: {
+      request_kind?: string | null;
+    };
+  };
+};
+
 export type AnalitricsContext = {
   ok?: boolean;
   found?: boolean;
@@ -87,6 +103,8 @@ export type AnalitricsContext = {
   profiles?: AnalitricsProfile[];
   feedback?: AnalitricsFeedback[];
   suggestedFeedback?: AnalitricsSuggestedFeedback | null;
+  pendingClarification?: Record<string, unknown> | null;
+  recentAnalysisStates?: AnalitricsAnalysisState[];
   summary?: AnalitricsContextSummary;
 };
 
@@ -107,6 +125,7 @@ export default function useAnalitricsContext(conversationId?: string | null) {
       refetchOnMount: true,
       refetchOnReconnect: true,
       refetchOnWindowFocus: false,
+      refetchInterval: 5000,
       staleTime: 10_000,
     },
   );

@@ -557,8 +557,10 @@ export const analitricsDashboards = () => `${BASE_URL}/api/analitrics/dashboards
 export const analitricsDashboard = (dashboardId: string) =>
   `${BASE_URL}/api/analitrics/dashboards/${encodeURIComponent(dashboardId)}`;
 
-export const analitricsDashboardFromAnalysis = () =>
-  `${BASE_URL}/api/analitrics/dashboards/from-analysis`;
+export const createAnalitricsDashboard = () => `${BASE_URL}/api/analitrics/dashboards`;
 
 export const analitricsDashboardViewRun = (dashboardId: string, viewId: string) =>
   `${BASE_URL}/api/analitrics/dashboards/${encodeURIComponent(dashboardId)}/views/${encodeURIComponent(viewId)}/run`;
+
+export const applyAnalitricsDashboardInstruction = (dashboardId: string) =>
+  `${BASE_URL}/api/analitrics/dashboards/${encodeURIComponent(dashboardId)}/instructions`;

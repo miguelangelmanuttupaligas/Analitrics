@@ -838,6 +838,7 @@ export const deleteFiles = async (payload: {
 }): Promise<f.DeleteFilesResponse> =>
   request.deleteWithOptions(endpoints.files(), {
     data: payload,
+    headers: { 'Content-Type': 'application/json' },
   });
 
 /* Speech */
@@ -1518,11 +1519,11 @@ export const getAnalitricsDashboard = <T = unknown>(dashboardId: string): Promis
   return request.get(endpoints.analitricsDashboard(dashboardId));
 };
 
-export const createAnalitricsDashboardFromAnalysis = <T = unknown>(payload: {
+export const createAnalitricsDashboard = <T = unknown>(payload: {
   conversationId: string;
   title?: string;
 }): Promise<T> => {
-  return request.post(endpoints.analitricsDashboardFromAnalysis(), payload);
+  return request.post(endpoints.createAnalitricsDashboard(), payload);
 };
 
 export const runAnalitricsDashboardView = <T = unknown>(
@@ -1531,4 +1532,11 @@ export const runAnalitricsDashboardView = <T = unknown>(
   payload: { limit?: number } = {},
 ): Promise<T> => {
   return request.post(endpoints.analitricsDashboardViewRun(dashboardId, viewId), payload);
+};
+
+export const applyAnalitricsDashboardInstruction = <T = unknown>(
+  dashboardId: string,
+  payload: { instruction: string },
+): Promise<T> => {
+  return request.post(endpoints.applyAnalitricsDashboardInstruction(dashboardId), payload);
 };

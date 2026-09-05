@@ -81,12 +81,16 @@ class AgentHttpHandler(BaseHTTPRequestHandler):
             self._handle_catalog_feedback()
             return
 
-        if self.path == "/agent/dashboards/from-analysis":
+        if self.path == "/agent/dashboards":
             self._handle_dashboard_create()
             return
 
         if self.path.startswith("/agent/dashboards/") and self.path.endswith("/run"):
             self._handle_dashboard_view_run()
+            return
+
+        if self.path.startswith("/agent/dashboards/") and self.path.endswith("/instructions"):
+            self._handle_dashboard_instruction()
             return
 
         if self.path != "/agent/run":
@@ -225,7 +229,7 @@ class AgentHttpHandler(BaseHTTPRequestHandler):
                 "conversationId",
             )
             title = self._optional_str(payload.get("title"))
-            dashboard = DashboardRepositoryFactory.get_repository(_run_repository).create_from_latest_analysis(
+            dashboard = DashboardRepositoryFactory.get_repository(_run_repository).create_from_conversation(
                 tenant_id=tenant_id,
                 user_id=user_id,
                 conversation_id=conversation_id,
@@ -262,6 +266,33 @@ class AgentHttpHandler(BaseHTTPRequestHandler):
                 limit=limit,
             )
             self._send_json(200, {"ok": True, **result})
+        except Exception as exc:
+            if bool_env("ANALITRICS_DEBUG_ERRORS", False):
+                raise
+            self._send_json(422, {"ok": False, "error": str(exc)})
+
+    def _handle_dashboard_instruction(self) -> None:
+        try:
+            payload = self._read_json()
+            parts = urlparse(self.path).path.strip("/").split("/")
+            if (
+                len(parts) != 4
+                or parts[0] != "agent"
+                or parts[1] != "dashboards"
+                or parts[3] != "instructions"
+            ):
+                raise RuntimeError("Invalid dashboard instruction path")
+            dashboard_id = parts[2]
+            tenant_id = str(payload.get("tenantId") or payload.get("tenant_id") or "analitrics")
+            user_id = self._required_str(payload.get("userId") or payload.get("user_id"), "userId")
+            instruction = self._required_str(payload.get("instruction"), "instruction")
+            dashboard = DashboardRepositoryFactory.get_repository(_run_repository).apply_instruction(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                dashboard_id=dashboard_id,
+                instruction=instruction,
+            )
+            self._send_json(200, {"ok": True, "dashboard": dashboard, "lastOperation": dashboard.get("lastOperation")})
         except Exception as exc:
             if bool_env("ANALITRICS_DEBUG_ERRORS", False):
                 raise

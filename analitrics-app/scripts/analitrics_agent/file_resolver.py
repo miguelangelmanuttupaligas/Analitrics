@@ -8,9 +8,11 @@ from .models import AgentRequest
 from .repositories import ConversationAttachmentRepository
 
 
-def csv_list(value: str | None) -> list[str]:
+def csv_list(value: str | list[str] | None) -> list[str]:
     if not value:
         return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
     return [item.strip() for item in value.split(",") if item.strip()]
 
 

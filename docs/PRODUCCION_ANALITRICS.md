@@ -12,13 +12,33 @@ Esta guia deja el despliegue pensado para una VM donde `analitrics.com` apunta p
 
 El gateway de Analitrics publica todo bajo el mismo origen. Esto evita dominios separados para LibreChat, Keycloak y Admin Panel.
 
-## Archivos de entorno
+## Repositorio GitHub
 
-Crear los `.env` desde los ejemplos:
+El remoto actual apunta a un repositorio llamado `librechat`. No conviene publicar este producto allí: el repositorio de Analitrics debe ser independiente y privado.
+
+1. Crear un repositorio vacío privado, por ejemplo `github.com/<organizacion>/analitrics`.
+2. Desde la copia local, preservar el remoto actual como referencia y agregar el nuevo remoto del producto:
 
 ```bash
-cp keycloak/.env.example keycloak/.env
-cp librechat/custom/.env.example librechat/custom/.env
+git remote rename origin librechat-fork
+git remote add origin git@github.com:<organizacion>/analitrics.git
+git push -u origin master
+```
+
+No se versionan `.env`, certificados, credenciales ni resultados bajo `tmp/`. Antes del primer `push`, revisar el conjunto real de cambios:
+
+```bash
+git status --short
+git diff --check
+```
+
+## Archivos de entorno
+
+La plantilla local sigue usando `analitrics-test.com:3443`. En la VM se deben usar exclusivamente las plantillas de producción:
+
+```bash
+cp keycloak/.env.production.example keycloak/.env
+cp librechat/custom/.env.production.example librechat/custom/.env
 ```
 
 Valores esperados en produccion:
@@ -37,6 +57,10 @@ KC_HOSTNAME_ADMIN=https://analitrics.com/auth
 ```
 
 Generar secretos reales para todos los valores `replace-with-*` antes de levantar servicios. No versionar los `.env`.
+
+`KEYCLOAK_LIBRECHAT_CLIENT_SECRET` en `keycloak/.env` y `OPENID_CLIENT_SECRET` en `librechat/custom/.env` deben contener exactamente el mismo valor. Este secreto crea el cliente OIDC `librechat` durante el primer arranque de Keycloak.
+
+La VM no usa Ollama ni otro servidor local: dejar `ANALITRICS_LLM_PROVIDER=openai`, definir `OPENAI_API_KEY` y el modelo OpenAI elegido.
 
 ## TLS
 
@@ -121,6 +145,26 @@ Con este enfoque, la renovacion de Certbot queda disponible para el contenedor. 
 docker restart analitrics-analitrics-gateway
 ```
 
+## Primer arranque
+
+Antes de iniciar:
+
+1. El DNS `analitrics.com` debe resolver a la IP pública de la VM.
+2. Los puertos TCP `80` y `443` deben estar permitidos por el firewall o security group.
+3. Ningún Nginx/Apache del host debe ocupar los puertos `80` y `443`; el gateway Docker de Analitrics será el único endpoint público.
+4. Deben existir los certificados válidos en `/var/analitrics/librechat/certs/analitrics.crt` y `/var/analitrics/librechat/certs/analitrics.key`.
+
+Al iniciar Keycloak por primera vez, importa [analitrics-realm.json](../keycloak/realm/analitrics-realm.json). El importador crea:
+
+- realm `analitrics` en español;
+- cliente OIDC confidencial `librechat`;
+- redirects para `https://analitrics.com`;
+- claim `tenantId=analitrics`;
+- claim `groups` y grupo `analitrics-admins`;
+- autoregistro y recuperación de contraseña habilitados.
+
+El import solo crea realms ausentes. Una vez persistida la base de Keycloak, no sobrescribe cambios administrativos hechos desde la consola.
+
 ## Orden de arranque
 
 ```bash
@@ -160,31 +204,48 @@ Postgres:       127.0.0.1:55432
 
 El `gateway` si debe quedar publico en produccion, porque es la entrada HTTPS de `https://analitrics.com`.
 
-## Configuracion inicial
+## Configuración inicial
 
-1. Entrar a `https://analitrics.com/auth/admin/`.
-2. Crear o importar el realm `analitrics`.
-3. Configurar el cliente OIDC `librechat`.
-4. Validar redirect URIs:
+1. Entrar a `https://analitrics.com/auth/admin/` con las credenciales `KC_BOOTSTRAP_ADMIN_*`.
+2. Confirmar que existe el realm `analitrics` y el cliente `librechat`.
+3. Validar redirect URIs:
 
 ```text
 https://analitrics.com/oauth/openid/callback
 https://analitrics.com/api/admin/oauth/openid/callback
 ```
 
-5. Validar post logout redirect URI:
+4. Validar post logout redirect URI:
 
 ```text
 https://analitrics.com/login?redirect=false
 ```
 
-6. Crear usuarios o habilitar autoregistro segun el criterio vigente del MVP.
+5. Para habilitar LibreChat Admin Panel, asignar el usuario administrativo al grupo `analitrics-admins` y habilitar en `librechat/custom/.env`:
+
+```env
+OPENID_ADMIN_ROLE=analitrics-admins
+OPENID_ADMIN_ROLE_PARAMETER_PATH=groups
+OPENID_ADMIN_ROLE_TOKEN_KIND=id
+```
+
+Reiniciar LibreChat después de editarlo: `make librechat down && make librechat up`.
+
+## Creación de cuentas
+
+Sí, el flujo de creación de cuenta está permitido hoy. `https://analitrics.com/login` redirige a Keycloak y desde ahí el usuario puede seleccionar **Crear cuenta**.
+
+- Keycloak crea la identidad; LibreChat no mantiene un segundo formulario de registro.
+- El correo es el identificador de inicio de sesión.
+- Todo usuario autocreado recibe el claim `tenantId=analitrics` en este MVP.
+- La recuperación de contraseña está visible, pero requiere SMTP real del realm para enviar el correo.
+- Para cerrar el registro futuro, en Keycloak ir a `Realm settings` -> `Login` y desactivar `User registration`. El login existente seguirá funcionando.
 
 ## Validacion rapida
 
 ```bash
 docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
-curl -k https://analitrics.com/
+curl -I https://analitrics.com/
 ```
 
 Desde navegador:

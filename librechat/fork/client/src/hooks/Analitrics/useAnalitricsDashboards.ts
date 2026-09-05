@@ -19,6 +19,12 @@ export type AnalitricsDashboardView = {
   question?: string | null;
   sql: string;
   chartSpec?: Record<string, unknown>;
+  metric?: string | null;
+  dimensions?: string[];
+  filters?: Array<Record<string, unknown>>;
+  sourceFileIds?: string[];
+  catalogHash?: string | null;
+  generationMetadata?: Record<string, unknown>;
   position?: number;
   createdAt?: string | null;
   updatedAt?: string | null;
@@ -69,16 +75,34 @@ export function useAnalitricsDashboard(dashboardId?: string | null) {
   );
 }
 
-export function useCreateAnalitricsDashboardFromAnalysis() {
+export function useCreateAnalitricsDashboard() {
   const queryClient = useQueryClient();
   return useMutation(
     (payload: { conversationId: string; title?: string }) =>
-      dataService.createAnalitricsDashboardFromAnalysis<{ ok?: boolean; dashboard?: AnalitricsDashboard }>(
+      dataService.createAnalitricsDashboard<{ ok?: boolean; dashboard?: AnalitricsDashboard }>(
         payload,
       ),
     {
       onSuccess: () => {
         queryClient.invalidateQueries([QueryKeys.analitricsDashboards]);
+      },
+    },
+  );
+}
+
+export function useApplyAnalitricsDashboardInstruction(dashboardId?: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation(
+    (payload: { instruction: string }) =>
+      dataService.applyAnalitricsDashboardInstruction<{
+        ok?: boolean;
+        dashboard?: AnalitricsDashboard;
+        lastOperation?: Record<string, unknown>;
+      }>(dashboardId ?? '', payload),
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries([QueryKeys.analitricsDashboards]);
+        queryClient.invalidateQueries([QueryKeys.analitricsDashboard, dashboardId]);
       },
     },
   );

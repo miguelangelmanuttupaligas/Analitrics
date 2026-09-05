@@ -149,7 +149,7 @@ router.get('/dashboards/:dashboardId', async (req, res) => {
   }
 });
 
-router.post('/dashboards/from-analysis', async (req, res) => {
+router.post('/dashboards', async (req, res) => {
   const conversationId = String(req.body?.conversationId || '');
   const title = req.body?.title ? String(req.body.title) : undefined;
   if (!conversationId) {
@@ -159,7 +159,7 @@ router.post('/dashboards/from-analysis', async (req, res) => {
   const agentOrigin = process.env.ANALITRICS_AGENT_ORIGIN || 'http://analytics-agent:8090';
 
   try {
-    const response = await fetch(agentOrigin + '/agent/dashboards/from-analysis', {
+    const response = await fetch(agentOrigin + '/agent/dashboards', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ tenantId, userId, conversationId, title }),
@@ -201,6 +201,35 @@ router.post('/dashboards/:dashboardId/views/:viewId/run', async (req, res) => {
   } catch (error) {
     logger.warn('[AnalitricsDashboardRun] Agent unavailable: ' + error.message);
     return res.status(502).json({ ok: false, error: 'Analitrics dashboard run unavailable' });
+  }
+});
+
+router.post('/dashboards/:dashboardId/instructions', async (req, res) => {
+  const dashboardId = String(req.params.dashboardId || '');
+  const instruction = String(req.body?.instruction || '');
+  if (!dashboardId) {
+    return res.status(400).json({ ok: false, error: 'dashboardId is required' });
+  }
+  if (!instruction.trim()) {
+    return res.status(400).json({ ok: false, error: 'instruction is required' });
+  }
+  const { tenantId, userId } = analitricsIdentity(req);
+  const agentOrigin = process.env.ANALITRICS_AGENT_ORIGIN || 'http://analytics-agent:8090';
+
+  try {
+    const response = await fetch(
+      agentOrigin + '/agent/dashboards/' + encodeURIComponent(dashboardId) + '/instructions',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tenantId, userId, instruction }),
+      },
+    );
+    const payload = await response.json().catch(() => ({}));
+    return res.status(response.status).json(payload);
+  } catch (error) {
+    logger.warn('[AnalitricsDashboardInstruction] Agent unavailable: ' + error.message);
+    return res.status(502).json({ ok: false, error: 'Analitrics dashboard instruction unavailable' });
   }
 });
 

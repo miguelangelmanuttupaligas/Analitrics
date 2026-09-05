@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as echarts from 'echarts';
 import { ArrowDownAZ, ArrowUpAZ, Maximize2, RotateCcw } from 'lucide-react';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 type AnalitricsChartSpec = {
@@ -73,6 +74,7 @@ export default function AnalitricsEChart({
   rows: Array<Record<string, unknown>>;
   className?: string;
 }) {
+  const localize = useLocalize();
   const chartRef = useRef<HTMLDivElement | null>(null);
   const chartInstance = useRef<echarts.ECharts | null>(null);
   const safeSpec = (spec ?? {}) as AnalitricsChartSpec;
@@ -160,7 +162,7 @@ export default function AnalitricsEChart({
   if (!safeSpec.xField || yFields.length === 0 || data.length === 0) {
     return (
       <div className="rounded-lg border border-border-light bg-surface-secondary p-4 text-sm text-text-secondary">
-        No hay datos suficientes para graficar esta vista.
+        {localize('com_analitrics_chart_not_enough_data')}
       </div>
     );
   }
@@ -175,9 +177,14 @@ export default function AnalitricsEChart({
     >
       <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <h4 className="truncate text-sm font-semibold text-text-primary">{safeSpec.title || 'Grafico'}</h4>
+          <h4 className="truncate text-sm font-semibold text-text-primary">
+            {safeSpec.title || localize('com_analitrics_dashboard_chart_fallback')}
+          </h4>
           <p className="mt-0.5 text-xs text-text-secondary">
-            {safeSpec.categoryLabel || safeSpec.xField} por {yFields.join(', ')}
+            {localize('com_analitrics_chart_by', {
+              category: safeSpec.categoryLabel || safeSpec.xField,
+              metrics: yFields.join(', '),
+            })}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -185,7 +192,7 @@ export default function AnalitricsEChart({
             type="button"
             className="rounded-lg p-2 text-text-secondary hover:bg-surface-hover hover:text-text-primary"
             onClick={() => setSortMode('desc')}
-            aria-label="Ordenar descendente"
+            aria-label={localize('com_analitrics_chart_sort_desc')}
           >
             <ArrowDownAZ className="size-4" aria-hidden="true" />
           </button>
@@ -193,7 +200,7 @@ export default function AnalitricsEChart({
             type="button"
             className="rounded-lg p-2 text-text-secondary hover:bg-surface-hover hover:text-text-primary"
             onClick={() => setSortMode('asc')}
-            aria-label="Ordenar ascendente"
+            aria-label={localize('com_analitrics_chart_sort_asc')}
           >
             <ArrowUpAZ className="size-4" aria-hidden="true" />
           </button>
@@ -201,7 +208,7 @@ export default function AnalitricsEChart({
             type="button"
             className="rounded-lg p-2 text-text-secondary hover:bg-surface-hover hover:text-text-primary"
             onClick={() => setSortMode('preserve')}
-            aria-label="Restaurar orden"
+            aria-label={localize('com_analitrics_chart_sort_restore')}
           >
             <RotateCcw className="size-4" aria-hidden="true" />
           </button>
@@ -209,7 +216,9 @@ export default function AnalitricsEChart({
             type="button"
             className="rounded-lg p-2 text-text-secondary hover:bg-surface-hover hover:text-text-primary"
             onClick={() => setExpanded((value) => !value)}
-            aria-label={expanded ? 'Cerrar zoom' : 'Ampliar grafico'}
+            aria-label={
+              expanded ? localize('com_analitrics_chart_close_zoom') : localize('com_analitrics_chart_expand')
+            }
           >
             <Maximize2 className="size-4" aria-hidden="true" />
           </button>

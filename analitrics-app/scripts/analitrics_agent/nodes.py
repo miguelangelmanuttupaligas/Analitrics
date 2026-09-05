@@ -147,8 +147,14 @@ class AnalyticalAgentNodes:
                 self._request,
                 [metadata.file_id for metadata in files],
             )
+            derived_metrics = self._catalog_repository.find_derived_metrics_for_request(
+                self._request,
+                [metadata.file_id for metadata in files],
+            )
             if catalog_feedback:
                 self._emit_progress(f"Cargando {len(catalog_feedback)} definición(es) del catálogo enriquecido.")
+            if derived_metrics:
+                self._emit_progress(f"Cargando {len(derived_metrics)} métrica(s) derivada(s) del catálogo.")
             recent_analysis_states = self._catalog_repository.find_recent_analysis_states(self._request)
             pending_clarification = self._catalog_repository.find_pending_clarification(self._request)
             if recent_analysis_states:
@@ -162,6 +168,7 @@ class AnalyticalAgentNodes:
                 pending_clarification,
             )
             available_data = self._schema_context_builder.build(files, profiles, catalog_feedback)
+            available_data["derived_metrics"] = derived_metrics
             self._emit_progress("Interpretando si la pregunta es nueva, seguimiento, corrección o aclaración...")
             conversation_plan = self._conversation_planner.plan(
                 self._request.question,
@@ -194,6 +201,10 @@ class AnalyticalAgentNodes:
                     self._request,
                     [metadata.file_id for metadata in files],
                 )
+                derived_metrics = self._catalog_repository.find_derived_metrics_for_request(
+                    self._request,
+                    [metadata.file_id for metadata in files],
+                )
             analytical_context = {
                 **analytical_context,
                 "conversation_plan": conversation_plan,
@@ -205,6 +216,7 @@ class AnalyticalAgentNodes:
                 "feedback_proposals": feedback_proposals,
                 "applied_feedback": applied_feedback,
                 "applied_feedbacks": applied_feedbacks,
+                "derived_metrics": derived_metrics,
             }
             effective_question = str(analytical_context.get("effective_question") or self._request.question)
             literal_metadata = self._literal_metadata_response(conversation_plan, profiles, workspace)
@@ -251,6 +263,7 @@ class AnalyticalAgentNodes:
                     "tables": tables,
                     "profiles": profiles,
                     "catalog_feedback": catalog_feedback,
+                    "derived_metrics": derived_metrics,
                     "analytical_context": analytical_context,
                     "in_scope": True,
                     "scope_reason": "metadata_literal_by_planner",
@@ -278,6 +291,7 @@ class AnalyticalAgentNodes:
                 "tables": tables,
                 "profiles": profiles,
                 "catalog_feedback": catalog_feedback,
+                "derived_metrics": derived_metrics,
                 "analytical_context": analytical_context,
                 "cache_path": str(workspace.cache_path) if workspace.cache_path else "",
                 "cache_hits": workspace.cache_hits,

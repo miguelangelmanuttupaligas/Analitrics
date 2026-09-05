@@ -88,6 +88,9 @@ class MetricExtractor:
         self._normalizer = normalizer or AnalysisTextNormalizer()
 
     def extract(self, question: str, sql: str, profiles: list[dict[str, Any]]) -> str | None:
+        sql_metric = self._aggregate_alias(sql)
+        if sql_metric:
+            return sql_metric
         normalized = self._normalizer.normalize(" ".join([question, sql]))
         for metric, aliases in METRIC_ALIASES:
             if any(self._normalizer.normalize(alias) in normalized for alias in aliases):
@@ -97,6 +100,16 @@ class MetricExtractor:
             if column.lower() in sql.lower():
                 return column
         return numeric_columns[0] if numeric_columns else None
+
+    def _aggregate_alias(self, sql: str) -> str | None:
+        match = re.search(
+            r"\b(?:sum|count|avg|min|max)\s*\(.+?\)\s+as\s+\"?([a-zA-Z_][a-zA-Z0-9_]*)\"?",
+            sql,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            return None
+        return match.group(1)
 
     def _numeric_columns(self, profiles: list[dict[str, Any]]) -> list[str]:
         columns: list[str] = []

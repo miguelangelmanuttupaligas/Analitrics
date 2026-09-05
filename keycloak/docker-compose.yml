@@ -27,15 +27,15 @@ services:
     image: quay.io/keycloak/keycloak:26.7.1
     restart: unless-stopped
     command:
-      - start-dev
+      - ${KC_START_MODE:-start-dev}
       - --http-port=8080
-      - --https-port=8444
       - --health-enabled=true
       - --metrics-enabled=false
       - --http-relative-path=/auth
       - --hostname=${KC_HOSTNAME:-https://analitrics.com:3443/auth}
       - --hostname-admin=${KC_HOSTNAME_ADMIN:-https://analitrics.com:3443/auth}
       - --hostname-backchannel-dynamic=true
+      - --import-realm
     depends_on:
       postgresql:
         condition: service_healthy
@@ -44,14 +44,14 @@ services:
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:?KC_BOOTSTRAP_ADMIN_PASSWORD is required}
+      KEYCLOAK_PUBLIC_ORIGIN: ${KEYCLOAK_PUBLIC_ORIGIN:-https://analitrics-test.com:3443}
+      KEYCLOAK_LIBRECHAT_CLIENT_SECRET: ${KEYCLOAK_LIBRECHAT_CLIENT_SECRET:-}
       KC_DB: postgres
       KC_DB_URL_HOST: postgresql
       KC_DB_URL_DATABASE: ${KC_DB_NAME:-keycloak}
       KC_DB_USERNAME: ${KC_DB_USERNAME:-keycloak}
       KC_DB_PASSWORD: ${KC_DB_PASSWORD:?KC_DB_PASSWORD is required}
       KC_HTTP_ENABLED: "true"
-      KC_HTTPS_CERTIFICATE_FILE: /opt/keycloak/conf/certs/keycloak.crt
-      KC_HTTPS_CERTIFICATE_KEY_FILE: /opt/keycloak/conf/certs/keycloak.key
       KC_PROXY_HEADERS: xforwarded
       KC_CACHE: local
       KC_HEALTH_ENABLED: "true"
@@ -66,8 +66,8 @@ services:
     mem_limit: 640m
     mem_reservation: 256m
     volumes:
-      - volume-keycloak-librechat-certs:/opt/keycloak/conf/certs:ro
       - ./themes:/opt/keycloak/themes:ro
+      - ./realm:/opt/keycloak/data/import:ro
     networks:
       network-analitrics:
         aliases:
@@ -86,10 +86,3 @@ volumes:
       type: none
       o: bind
       device: /var/analitrics/keycloak/postgresql
-  volume-keycloak-librechat-certs:
-    name: volume-keycloak-librechat-certs
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: /var/analitrics/keycloak/certs

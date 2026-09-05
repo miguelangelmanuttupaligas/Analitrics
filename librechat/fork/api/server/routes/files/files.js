@@ -169,7 +169,8 @@ router.post('/usage', async (req, res) => {
 
 router.delete('/', async (req, res) => {
   try {
-    const { files: _files } = req.body;
+    const { files: requestedFiles = [] } = req.body ?? {};
+    const _files = Array.isArray(requestedFiles) ? requestedFiles : [];
 
     /** @type {MongoFile[]} */
     const files = _files.filter((file) => {

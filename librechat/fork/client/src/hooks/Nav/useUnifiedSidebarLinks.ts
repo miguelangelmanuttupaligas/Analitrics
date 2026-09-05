@@ -68,7 +68,7 @@ export default function useUnifiedSidebarLinks() {
       Component: ConversationsSection,
     };
     const dashboardsLink: NavLink = {
-      title: 'Dashboards' as never,
+      title: 'com_analitrics_dashboard_nav',
       label: '',
       icon: LayoutDashboard,
       id: 'dashboards',

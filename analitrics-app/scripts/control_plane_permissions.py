@@ -49,7 +49,9 @@ def main() -> None:
         con.execute(sql.SQL("grant usage on schema public to {}").format(sql.Identifier(runtime_user)))
         con.execute(sql.SQL("revoke create on schema public from {}").format(sql.Identifier(runtime_user)))
         con.execute(sql.SQL("grant select, insert, update, delete on all tables in schema public to {}").format(sql.Identifier(runtime_user)))
+        con.execute(sql.SQL("grant usage, select on all sequences in schema public to {}").format(sql.Identifier(runtime_user)))
         con.execute(sql.SQL("alter default privileges in schema public grant select, insert, update, delete on tables to {}").format(sql.Identifier(runtime_user)))
+        con.execute(sql.SQL("alter default privileges in schema public grant usage, select on sequences to {}").format(sql.Identifier(runtime_user)))
     print(f"runtime role ready: {runtime_user}")
 
 

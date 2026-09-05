@@ -161,6 +161,7 @@ services:
       ANALITRICS_RECONCILE_INTERVAL_SECONDS: ${ANALITRICS_RECONCILE_INTERVAL_SECONDS:-21600}
       ANALITRICS_TRACING_ENABLED: ${ANALITRICS_TRACING_ENABLED:-true}
       ANALITRICS_ENGINE: ${ANALITRICS_ENGINE:-langgraph}
+      ANALITRICS_CHARTS_ENABLED: ${ANALITRICS_CHARTS_ENABLED:-false}
       ANALITRICS_ALLOW_ARBITRARY_CODE: "false"
       PYTHONDONTWRITEBYTECODE: "1"
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://phoenix:4317}
@@ -241,16 +242,24 @@ services:
       RUSTFS_ANALYTICS_SECRET_ACCESS_KEY: ${RUSTFS_ANALYTICS_SECRET_ACCESS_KEY:?RUSTFS_ANALYTICS_SECRET_ACCESS_KEY is required}
     entrypoint: >
       /bin/sh -c "
-      until mc alias set rustfs http://storage-rustfs:9000 \"$${RUSTFS_ACCESS_KEY_ID}\" \"$${RUSTFS_SECRET_ACCESS_KEY}\"; do
+      export MC_HOST_rustfs=\"http://$${RUSTFS_ACCESS_KEY_ID}:$${RUSTFS_SECRET_ACCESS_KEY}@storage-rustfs:9000\";
+      until timeout 10s mc admin user list rustfs >/dev/null 2>&1; do
         sleep 1;
       done;
-      mc mb --ignore-existing rustfs/\"$${RUSTFS_BUCKET_NAME}\";
+      timeout 15s mc mb --ignore-existing rustfs/\"$${RUSTFS_BUCKET_NAME}\" || true;
       if ! mc admin user info rustfs \"$${RUSTFS_ANALYTICS_ACCESS_KEY_ID}\" >/dev/null 2>&1; then
         mc admin user add rustfs \"$${RUSTFS_ANALYTICS_ACCESS_KEY_ID}\" \"$${RUSTFS_ANALYTICS_SECRET_ACCESS_KEY}\";
-      else
-        mc admin user enable rustfs \"$${RUSTFS_ANALYTICS_ACCESS_KEY_ID}\" || true;
       fi;
-      mc admin policy attach rustfs readonly --user \"$${RUSTFS_ANALYTICS_ACCESS_KEY_ID}\";
+      user_info=\"$$(mc admin user info rustfs \"$${RUSTFS_ANALYTICS_ACCESS_KEY_ID}\")\";
+      case \"$$user_info\" in
+        *\"PolicyName: readonly\"*) ;;
+        *) timeout 15s mc admin policy attach rustfs readonly --user \"$${RUSTFS_ANALYTICS_ACCESS_KEY_ID}\" || true ;;
+      esac;
+      user_info=\"$$(mc admin user info rustfs \"$${RUSTFS_ANALYTICS_ACCESS_KEY_ID}\")\";
+      case \"$$user_info\" in
+        *\"PolicyName: readonly\"*) exit 0 ;;
+        *) echo \"RustFS readonly policy was not applied\"; echo \"$$user_info\"; exit 1 ;;
+      esac;
       "
     networks:
       - network-analitrics
