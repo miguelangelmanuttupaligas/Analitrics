@@ -64,4 +64,21 @@ if (!source.includes(updateReplacement)) {
   source = source.replace(updateAnchor, updateReplacement);
 }
 
+const persistAnchor = '  user = await updateUser(user._id, user);';
+const persistReplacement = `${persistAnchor}
+
+  // Never complete an OpenID login with an unscoped LibreChat user.
+  if (user?.tenantId !== tenantId) {
+    user = await updateUser(user._id, { tenantId });
+  }
+  if (user?.tenantId !== tenantId) {
+    throw new Error('OpenID tenant claim could not be persisted');
+  }`;
+if (!source.includes(persistReplacement)) {
+  if (!source.includes(persistAnchor)) {
+    throw new Error('LibreChat OpenID tenant persistence patch anchor not found');
+  }
+  source = source.replace(persistAnchor, persistReplacement);
+}
+
 fs.writeFileSync(file, source);
