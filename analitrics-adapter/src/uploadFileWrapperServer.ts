@@ -63,7 +63,7 @@ function shouldRewriteContext(formData: FormData): boolean {
   return false;
 }
 
-function buildForwardHeaders(req: express.Request): Headers {
+export function buildForwardHeaders(req: express.Request): Headers {
   const headers = new Headers();
   const passthrough = [
     'accept',
@@ -170,7 +170,7 @@ async function proxyUpload(req: express.Request, res: express.Response): Promise
   await relayResponse(response, res);
 }
 
-async function main(): Promise<void> {
+export function createUploadFileWrapperApp(): express.Express {
   const app = express();
 
   app.get('/health', (_req, res) => {
@@ -194,12 +194,19 @@ async function main(): Promise<void> {
     }
   });
 
+  return app;
+}
+
+async function main(): Promise<void> {
+  const app = createUploadFileWrapperApp();
   app.listen(config.PORT, '0.0.0.0', () => {
     console.log(`Analitrics upload-file-wrapper listening on port ${config.PORT}`);
   });
 }
 
-void main().catch((error) => {
-  console.error('Failed to start Analitrics upload-file-wrapper', error);
-  process.exit(1);
-});
+if (process.env.NODE_ENV !== 'test') {
+  void main().catch((error) => {
+    console.error('Failed to start Analitrics upload-file-wrapper', error);
+    process.exit(1);
+  });
+}

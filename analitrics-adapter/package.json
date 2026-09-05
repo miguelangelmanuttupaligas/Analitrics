@@ -6,6 +6,7 @@
   "description": "Adapter services between LibreChat and Analitrics.",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test:wrapper": "npm run build && NODE_ENV=test node --test dist/uploadFileWrapperServer.test.js",
     "start:upload-file-wrapper": "node dist/uploadFileWrapperServer.js"
   },
   "dependencies": {
