@@ -69,6 +69,9 @@ function buildForwardHeaders(req: express.Request): Headers {
     'accept',
     'authorization',
     'cookie',
+    // DELETE /api/files carries JSON. Without this header LibreChat ignores
+    // the body and returns a false-successful empty deletion.
+    'content-type',
     'user-agent',
     'x-forwarded-for',
     'x-forwarded-host',
