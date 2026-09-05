@@ -26,7 +26,14 @@ up down:
 				$(MAKE) --no-print-directory prepare-dirs ensure-network; \
 			fi; \
 			if [[ "$(STACK)" == "librechat" ]]; then \
-				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" up -d --build --remove-orphans; \
+				app_env_file="librechat/custom/.env"; \
+				configured_uid="$$(awk -F= '$$1 == "UID" && $$2 ~ /^[0-9]+$$/ { print $$2; exit }' "$$app_env_file" 2>/dev/null || true)"; \
+				configured_gid="$$(awk -F= '$$1 == "GID" && $$2 ~ /^[0-9]+$$/ { print $$2; exit }' "$$app_env_file" 2>/dev/null || true)"; \
+				app_owner="$${configured_uid:-1000}:$${configured_gid:-1000}"; \
+				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" build; \
+				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" run --rm --no-deps --user 0:0 -e ANALITRICS_APP_OWNER="$$app_owner" --entrypoint sh api -ec 'chown -R "$$ANALITRICS_APP_OWNER" /app/uploads /app/logs /app/skill /app/data /app/client/public/images'; \
+				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" run --rm --no-deps --user 0:0 -e ANALITRICS_APP_OWNER="$$app_owner" --entrypoint sh analytics-agent -ec 'chown -R "$$ANALITRICS_APP_OWNER" /var/analitrics/analytics/cache'; \
+				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" up -d --no-build --remove-orphans; \
 			else \
 				docker compose --project-name "$$compose_project" --project-directory "$$compose_dir" -f "$$compose_dir/docker-compose.yml" up -d --remove-orphans; \
 			fi; \
