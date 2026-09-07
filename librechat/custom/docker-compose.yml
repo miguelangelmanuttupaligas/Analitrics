@@ -1,7 +1,7 @@
 services:
   gateway:
     container_name: analitrics-analitrics-gateway
-    image: nginx:1.27-alpine
+    image: nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     restart: unless-stopped
     depends_on:
       api:
@@ -98,7 +98,7 @@ services:
 
   admin-panel:
     container_name: analitrics-analitrics-admin-panel
-    image: registry.librechat.ai/clickhouse/librechat-admin-panel:latest
+    image: registry.librechat.ai/clickhouse/librechat-admin-panel@sha256:a395465d1daa3c11495810a8c224df86675985d50de42e98e36eeedbd8aecb94
     restart: unless-stopped
     expose:
       - "3000"
@@ -193,7 +193,7 @@ services:
 
   control-postgres:
     container_name: analitrics-analitrics-control-postgres
-    image: postgres:16-alpine
+    image: postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
     restart: unless-stopped
     ports:
       - "127.0.0.1:${ANALITRICS_POSTGRES_HOST_PORT:-55432}:5432"
@@ -214,7 +214,7 @@ services:
 
   storage-rustfs:
     container_name: analitrics-analitrics-storage-rustfs
-    image: rustfs/rustfs:latest
+    image: rustfs/rustfs@sha256:41fe89380f4120a337790c02af192c3fe7bb55c3edc2e6e9357b487b47c6ab21
     restart: unless-stopped
     init: true
     command: /data
@@ -241,7 +241,7 @@ services:
 
   storage-rustfs-init:
     container_name: analitrics-analitrics-storage-rustfs-init
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     restart: "no"
     depends_on:
       storage-rustfs:
@@ -258,7 +258,7 @@ services:
       until timeout 10s mc admin user list rustfs >/dev/null 2>&1; do
         sleep 1;
       done;
-      timeout 15s mc mb --ignore-existing rustfs/\"$${RUSTFS_BUCKET_NAME}\" || true;
+      timeout 15s mc mb --ignore-existing rustfs/\"$${RUSTFS_BUCKET_NAME}\";
       if ! mc admin user info rustfs \"$${RUSTFS_ANALYTICS_ACCESS_KEY_ID}\" >/dev/null 2>&1; then
         mc admin user add rustfs \"$${RUSTFS_ANALYTICS_ACCESS_KEY_ID}\" \"$${RUSTFS_ANALYTICS_SECRET_ACCESS_KEY}\";
       fi;
@@ -278,7 +278,7 @@ services:
 
   mongodb:
     container_name: analitrics-analitrics-mongodb
-    image: mongo:8.0.20
+    image: mongo@sha256:098862b1339f031900ca66cf8fef799e616d6324fa41b9a263f2ec899552c1ef
     restart: unless-stopped
     user: "${MONGO_UID:-999}:${MONGO_GID:-999}"
     command: mongod --noauth
@@ -289,7 +289,7 @@ services:
 
   vectordb:
     container_name: analitrics-analitrics-vectordb
-    image: pgvector/pgvector:0.8.0-pg15-trixie
+    image: pgvector/pgvector@sha256:8809cfffff0082cf260c9ac752f1dd1afc77f6f0a55c4e6411321e78efc3d9a5
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${RAG_POSTGRES_DB:-librechat}
@@ -302,7 +302,7 @@ services:
 
   rag_api:
     container_name: analitrics-analitrics-rag-api
-    image: registry.librechat.ai/danny-avila/librechat-rag-api-dev-lite:latest
+    image: registry.librechat.ai/danny-avila/librechat-rag-api-dev-lite@sha256:c0ad82657b556c1e16dcfca85d045788f67caa223e25e70eb687f4d16b41dedc
     restart: unless-stopped
     depends_on:
       vectordb:

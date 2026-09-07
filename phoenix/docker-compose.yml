@@ -1,6 +1,6 @@
 services:
   phoenix:
-    image: arizephoenix/phoenix:latest
+    image: arizephoenix/phoenix@sha256:5ae3c414e8ee7ee47caa022edf8e94bdef7a90634a4e914a99dbe9d1f70790b8
     container_name: analitrics-observability-phoenix
     restart: unless-stopped
     environment:

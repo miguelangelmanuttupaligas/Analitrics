@@ -1,11 +1,10 @@
 # Build LibreChat from the controlled source fork so Analitrics UI changes live in
 # React instead of post-build HTML/script injection.
-FROM node:24.16.0-alpine
+FROM node:24.16.0-alpine@sha256:21f403ab171f2dc89bad4dd69d7721bfd15f084ccb46cdd225f31f2bc59b5c9a
 
-RUN apk upgrade --no-cache \
-  && apk add --no-cache jemalloc python3 py3-pip
+RUN apk add --no-cache jemalloc python3 py3-pip
 
-COPY --from=ghcr.io/astral-sh/uv:0.9.5-python3.12-alpine /usr/local/bin/uv /usr/local/bin/uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.9.5-python3.12-alpine@sha256:2e66d113fca5f5a491ce7cb56a5e7829994408e9adf15d281b9bc99b8e5d0b2f /usr/local/bin/uv /usr/local/bin/uvx /bin/
 
 ENV LD_PRELOAD=/usr/lib/libjemalloc.so.2
 
