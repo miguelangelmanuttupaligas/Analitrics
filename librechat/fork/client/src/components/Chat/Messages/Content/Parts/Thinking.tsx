@@ -16,14 +16,34 @@ import { cn } from '~/utils';
 export const ThinkingContent: FC<{
   children: React.ReactNode;
   animate?: boolean;
-}> = memo(({ children, animate = false }) => {
+  isStreaming?: boolean;
+}> = memo(({ children, animate = false, isStreaming = false }) => {
   const fontSize = useAtomValue(fontSizeAtom);
   const content =
     animate && typeof children === 'string' ? <AnimatedText text={children} /> : children;
 
+  const renderedContent = useMemo(() => {
+    if (!isStreaming || typeof content !== 'string') {
+      return content;
+    }
+
+    const lines = content.split('\n');
+    const activeLineIndex = lines.reduce(
+      (lastNonEmptyIndex, line, index) => (line.trim().length > 0 ? index : lastNonEmptyIndex),
+      -1,
+    );
+
+    return lines.map((line, index) => (
+      <span key={`${index}-${line}`}>
+        <span className={cn(index === activeLineIndex && 'shimmer')}>{line}</span>
+        {index < lines.length - 1 && <br />}
+      </span>
+    ));
+  }, [content, isStreaming]);
+
   return (
     <div className="relative rounded-lg border border-border-light bg-surface-secondary p-3 pb-8 text-text-secondary">
-      <p className={cn('whitespace-pre-wrap leading-[26px]', fontSize)}>{content}</p>
+      <p className={cn('whitespace-pre-wrap leading-[26px]', fontSize)}>{renderedContent}</p>
     </div>
   );
 });

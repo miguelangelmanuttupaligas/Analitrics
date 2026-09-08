@@ -144,7 +144,7 @@ const Reasoning = memo((props: ReasoningProps) => {
                   Render the accumulated reasoning verbatim; the label still
                   signals that the response is in progress.
                 */}
-                <ThinkingContent animate={false}>
+                <ThinkingContent animate={false} isStreaming={effectiveIsSubmitting && isLast}>
                   {reasoningText}
                 </ThinkingContent>
                 <FloatingThinkingBar

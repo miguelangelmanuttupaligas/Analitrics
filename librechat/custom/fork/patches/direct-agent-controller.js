@@ -543,7 +543,10 @@ async function runAnalitricsDirectController(req, res, initializeClient, addTitl
     }
     await emitMessageStep();
     await GenerationJobManager.emitChunk(streamId, {
-      event: 'on_message_delta',
+      // THINK content has its own native event path in LibreChat. Routing
+      // analytical progress through it prevents the text-delta coalescer from
+      // treating progress entries as assistant response tokens.
+      event: 'on_reasoning_delta',
       data: {
         id: messageStepId,
         delta: {
