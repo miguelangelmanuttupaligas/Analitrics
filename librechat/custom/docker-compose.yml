@@ -5,7 +5,9 @@ services:
     restart: unless-stopped
     depends_on:
       api:
-        condition: service_healthy
+        # OIDC discovery from the API reaches Keycloak through this gateway.
+        # Waiting for API health here causes a circular startup dependency.
+        condition: service_started
       admin-panel:
         condition: service_started
       upload-file-wrapper:
@@ -81,6 +83,9 @@ services:
       AWS_FORCE_PATH_STYLE: "true"
       ANALITRICS_AGENT_ORIGIN: http://analytics-agent:8090
       ANALITRICS_DIRECT_AGENT: "true"
+      # A product deployment must never serve an OpenID route without the
+      # strategy registered. The API exits after bounded discovery retries.
+      ANALITRICS_REQUIRE_OPENID: "${ANALITRICS_REQUIRE_OPENID:-true}"
       ANALITRICS_MODEL: ${ANALITRICS_MODEL:-analitrics-agent}
       LIBRECHAT_TEMP_CREDENTIALS_PATH: /app/data/.env.temp
       NO_PROXY: localhost,127.0.0.1,::1,mongodb,vectordb,rag_api,keycloak,gateway,postgresql,control-postgres,analytics-agent,storage-rustfs,host.docker.internal,${PUBLIC_HOST:-analitrics-test.com}
