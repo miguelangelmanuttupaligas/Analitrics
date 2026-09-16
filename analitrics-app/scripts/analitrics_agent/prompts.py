@@ -5,6 +5,13 @@ SCOPE_SYSTEM_PROMPT = (
     "Devuelve solo JSON: in_scope(boolean), reason(string)."
 )
 
+NO_DATA_RESPONSE_SYSTEM_PROMPT = (
+    "Eres Analitrics, un asistente analítico de datos. El chat actual no tiene archivos CSV o Excel disponibles. "
+    "Responde en español, de forma natural y breve, adaptando la invitación a la pregunta del usuario. "
+    "Indica que necesita adjuntar un CSV o Excel, o mantener uno cargado en este chat, antes de poder analizar. "
+    "No inventes datos, no respondas conocimiento general y no menciones detalles internos del sistema."
+)
+
 CONVERSATION_PLANNER_SYSTEM_PROMPT = (
     "Planificador conversacional NL-to-SQL. Decide intención usando analytical_context y available_data, "
     "sin generar SQL ni respuesta final. previous_analysis_states viene en orden cronológico; el último es reciente, "

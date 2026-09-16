@@ -4,6 +4,7 @@ import argparse
 
 from nl_sql_file import FileMetadata, resolve_file
 
+from .errors import NoAnalyticalFilesError
 from .models import AgentRequest
 from .repositories import ConversationAttachmentRepository
 
@@ -43,8 +44,8 @@ class FileResolver:
                 )
 
         if not file_ids and not filenames:
-            raise RuntimeError(
-                "Provide --file-id, --filename, --file-ids, --filenames, or a conversation/message with attachments"
+            raise NoAnalyticalFilesError(
+                "No hay archivos tabulares adjuntos en el mensaje ni en el historial del chat."
             )
 
         files: list[FileMetadata] = []

@@ -16,10 +16,11 @@ from .config import env
 from .conversation_planner import ConversationPlanner, find_selected_analysis_state
 from .duckdb_workspace import DuckDbTableCatalog, DuckDbWorkspace, DuckDbWorkspaceFactory, ProfileEnricher
 from .control_plane import CatalogRepository
+from .errors import NoAnalyticalFilesError
 from .file_resolver import FileResolver
 from .llm_client import JsonLlmClient
 from .models import AgentRequest, AgentState
-from .prompts import SCOPE_SYSTEM_PROMPT
+from .prompts import NO_DATA_RESPONSE_SYSTEM_PROMPT, SCOPE_SYSTEM_PROMPT
 from .schema_context import SchemaContextBuilder
 from .sql_generation import SqlGenerator
 from .sql_validation import SqlReadOnlyValidator
@@ -113,10 +114,52 @@ class AnalyticalAgentNodes:
         self._progress = progress
         self._token = token
 
+    def check_available_files(self, state: AgentState) -> AgentState:
+        """Resolve chat attachments before any analytical runtime is created."""
+        with self._tracer.start_as_current_span("check_available_files") as span:
+            self._emit_progress("Verificando archivos disponibles en este chat...")
+            try:
+                files = self._file_resolver.resolve(self._request)
+            except NoAnalyticalFilesError:
+                self._emit_progress("No encontré un archivo tabular disponible para analizar.")
+                answer = self._llm_client.stream_text(
+                    system=NO_DATA_RESPONSE_SYSTEM_PROMPT,
+                    payload={"question": self._request.question},
+                    model_env="ANALITRICS_ANSWER_MODEL",
+                    default_model="gpt-5.5",
+                    on_token=self._emit_token_chunk,
+                ).strip()
+                if not answer:
+                    raise RuntimeError("The no-data responder returned an empty response")
+                set_span_attrs(
+                    span,
+                    {
+                        "analitrics.file_count": 0,
+                        "analitrics.in_scope": False,
+                        "analitrics.scope_reason": "no_analytical_files",
+                        "analitrics.no_data_llm_response": True,
+                    },
+                )
+                return {
+                    **state,
+                    "files": [],
+                    "profiles": [],
+                    "in_scope": False,
+                    "scope_reason": "no_analytical_files",
+                    "answer": answer,
+                    "rows": [],
+                    "sql": "",
+                    "critic": {"approved": True, "skipped": True, "reason": "No analytical files available."},
+                    "chart_spec": {"chart_required": False, "chart_intent": False, "renderer": "echarts", "spec": None},
+                }
+            set_span_attrs(span, {"analitrics.file_count": len(files), "analitrics.has_analytical_files": True})
+            return {**state, "files": files}
+
     def resolve_and_profile(self, state: AgentState) -> AgentState:
         with self._tracer.start_as_current_span("resolve_and_profile") as span:
-            self._emit_progress("Buscando archivos adjuntos en el contexto del chat...")
-            files = self._file_resolver.resolve(self._request)
+            files = state.get("files") or []
+            if not files:
+                raise RuntimeError("Analytical workspace requires files resolved by check_available_files")
             file_names = ", ".join(metadata.filename for metadata in files[:3])
             suffix = "..." if len(files) > 3 else ""
             self._emit_progress(f"Encontré {len(files)} archivo(s) tabulares: {file_names}{suffix}.")
@@ -788,6 +831,13 @@ class AnalyticalAgentNodes:
             return
         for index in range(0, len(text), 24):
             self._token(text[index : index + 24])
+
+    def _emit_token_chunk(self, text: str) -> None:
+        if self._token is not None and text:
+            self._token(text)
+
+    def route_after_file_check(self, state: AgentState) -> Literal["resolve_and_profile", "__end__"]:
+        return "resolve_and_profile" if state.get("files") else "__end__"
 
     def _chart_intent(self, state: AgentState) -> bool:
         if not self._charts_enabled():

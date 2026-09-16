@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 
 from openai import OpenAI
 
@@ -159,6 +159,71 @@ class JsonLlmClient:
                 },
             )
             self._debug_llm_stats("text", model_env, model, provider, duration_ms, payload_stats, usage)
+            return content
+
+    def stream_text(
+        self,
+        system: str,
+        payload: dict[str, Any],
+        model_env: str,
+        default_model: str,
+        on_token: Callable[[str], None],
+    ) -> str:
+        provider = self._provider()
+        model = self._model(model_env, default_model)
+        payload_stats = self._payload_stats(system, payload)
+        with self._tracer.start_as_current_span("llm_text_stream") as span:
+            set_span_attrs(
+                span,
+                {
+                    "llm.model": model,
+                    "llm.model_env": model_env,
+                    "llm.provider": provider,
+                    "llm.prompt_chars.system": payload_stats["system_chars"],
+                    "llm.prompt_chars.payload_total": payload_stats["payload_total_chars"],
+                    "llm.prompt_chars.by_key": payload_stats["payload_key_chars"],
+                    "llm.payload_summary": {"keys": sorted(payload.keys()), "question": payload.get("question")},
+                },
+            )
+            request: dict[str, Any] = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False, indent=2)},
+                ],
+                "stream": True,
+            }
+            if provider == "openai":
+                request["stream_options"] = {"include_usage": True}
+            if not model.startswith("gpt-5."):
+                request["temperature"] = 0
+            started = time.perf_counter()
+            chunks: list[str] = []
+            usage = {"prompt_tokens": None, "completion_tokens": None, "total_tokens": None}
+            for event in self._client().chat.completions.create(**request):
+                event_usage = self._usage(event)
+                if event_usage["total_tokens"] is not None:
+                    usage = event_usage
+                choices = getattr(event, "choices", None) or []
+                if not choices:
+                    continue
+                delta = getattr(getattr(choices[0], "delta", None), "content", None) or ""
+                if delta:
+                    chunks.append(delta)
+                    on_token(delta)
+            content = "".join(chunks)
+            duration_ms = round((time.perf_counter() - started) * 1000, 2)
+            set_span_attrs(
+                span,
+                {
+                    "llm.output_chars": len(content),
+                    "llm.duration_ms": duration_ms,
+                    "llm.usage.prompt_tokens": usage["prompt_tokens"],
+                    "llm.usage.completion_tokens": usage["completion_tokens"],
+                    "llm.usage.total_tokens": usage["total_tokens"],
+                },
+            )
+            self._debug_llm_stats("text_stream", model_env, model, provider, duration_ms, payload_stats, usage)
             return content
 
     def _parse_json_response(self, content: str) -> dict[str, Any]:

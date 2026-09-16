@@ -18,6 +18,13 @@ class AnalitricsError(RuntimeError):
         }
 
 
+class NoAnalyticalFilesError(AnalitricsError):
+    """The current chat has no CSV or Excel available for analysis."""
+
+    code = "no_analytical_files"
+    user_message = "No hay archivos tabulares disponibles en este chat."
+
+
 class FileIngestError(AnalitricsError):
     code = "file_ingest_failed"
 

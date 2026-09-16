@@ -105,36 +105,6 @@ class AnalyticalAgent:
             self._run_repository.save_run(request, result, trace_id=trace_id)
             return result
         except Exception as exc:
-            if "conversation/message with attachments" in str(exc):
-                answer = (
-                    "Necesito que cargues o mantengas en la conversación al menos un archivo "
-                    "CSV o Excel para poder analizar datos."
-                )
-                result = {
-                    "question": request.question,
-                    "run_id": request.run_id or "",
-                    "files": [],
-                    "profiles": [],
-                    "in_scope": False,
-                    "scope_reason": "No tabular files were found in the current analytical context.",
-                    "plan": {"backend": env("ANALITRICS_ENGINE", "langgraph"), "sql": "", "rationale": "No data file available."},
-                    "sql": "",
-                    "rows": [],
-                    "answer": answer,
-                    "critic": {"approved": True, "issues": [], "backend": env("ANALITRICS_ENGINE", "langgraph")},
-                    "chart_spec": {"chart_required": False, "reason": "No data file available."},
-                    "cache_path": "",
-                    "cache_hits": 0,
-                    "engine": env("ANALITRICS_ENGINE", "langgraph"),
-                    "trace_id": trace_id or "",
-                }
-                # Emit the fallback through the same SSE token path as a normal
-                # analytical answer. LibreChat renders this reliably while a
-                # final-only response can appear as an empty assistant message.
-                if token is not None:
-                    token(answer)
-                self._run_repository.save_run(request, result, trace_id=trace_id)
-                return result
             self._run_repository.save_run(request, result, error=str(exc), trace_id=trace_id)
             raise
         finally:
@@ -143,6 +113,7 @@ class AnalyticalAgent:
 
     def _build_graph(self, nodes: AnalyticalAgentNodes) -> Any:
         graph = StateGraph(AgentState)
+        graph.add_node("check_available_files", nodes.check_available_files)
         graph.add_node("resolve_and_profile", nodes.resolve_and_profile)
         graph.add_node("check_question_scope", nodes.check_question_scope)
         graph.add_node("generate_sql", nodes.generate_sql)
@@ -153,7 +124,12 @@ class AnalyticalAgent:
         graph.add_node("generate_chart_spec", nodes.generate_chart_spec)
         graph.add_node("persist_analysis_state", nodes.persist_analysis_state)
 
-        graph.set_entry_point("resolve_and_profile")
+        graph.set_entry_point("check_available_files")
+        graph.add_conditional_edges(
+            "check_available_files",
+            nodes.route_after_file_check,
+            {"resolve_and_profile": "resolve_and_profile", "__end__": END},
+        )
         graph.add_edge("resolve_and_profile", "check_question_scope")
         graph.add_conditional_edges(
             "check_question_scope",
@@ -200,6 +176,7 @@ class AnalyticalAgentNodesFactory:
         self._table_catalog = table_catalog
         self._schema_context_builder = schema_context_builder
         self._sql_validator = sql_validator
+        self._llm_client: JsonLlmClient | None = None
 
     def create(
         self,
@@ -209,7 +186,12 @@ class AnalyticalAgentNodesFactory:
         progress: Callable[[str], None] | None = None,
         token: Callable[[str], None] | None = None,
     ) -> AnalyticalAgentNodes:
-        llm_client = JsonLlmClient(tracer)
+        # The analytical agent is a singleton. Reusing this client preserves
+        # the HTTP connection pool across turns instead of paying connection
+        # setup for every planner, answer, or no-data response.
+        if self._llm_client is None:
+            self._llm_client = JsonLlmClient(tracer)
+        llm_client = self._llm_client
         return AnalyticalAgentNodes(
             request=request,
             runtime=runtime,
