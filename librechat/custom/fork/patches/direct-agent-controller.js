@@ -499,7 +499,16 @@ async function runAnalitricsDirectController(req, res, initializeClient, addTitl
     })();
   }
 
-  res.json({ streamId, conversationId, status: 'started' });
+  // Match LibreChat's resumable-generation contract. The client uses the
+  // generation epoch to fence the SSE attachment and protocol v2 to replay
+  // state safely when an attachment races a fast response.
+  res.json({
+    streamId,
+    conversationId,
+    generationCreatedAt: job.createdAt,
+    generationProtocolVersion: 2,
+    status: 'started',
+  });
 
   const streamSubscriberAttached = await waitForAnalitricsStreamSubscriber(
     streamId,
