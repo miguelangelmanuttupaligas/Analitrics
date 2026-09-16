@@ -59,6 +59,8 @@ RUN node --check /tmp/analitrics-fork/api/routes/analitrics.js \
   && node /tmp/analitrics-fork/patches/install-analitrics-route.js
 RUN node /tmp/analitrics-fork/patches/conversation-cleanup.js
 RUN node /tmp/analitrics-fork/patches/direct-agent-controller.js
+RUN node /tmp/analitrics-fork/patches/stream-subscriber-handshake.js \
+  && node --check /app/api/server/routes/agents/index.js
 RUN node /tmp/analitrics-fork/patches/openid-tenant.js \
   && node /tmp/analitrics-fork/patches/openid-startup-hardening.js \
   && node --check /app/api/strategies/openidStrategy.js \

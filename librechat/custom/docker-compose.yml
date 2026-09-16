@@ -83,6 +83,7 @@ services:
       AWS_FORCE_PATH_STYLE: "true"
       ANALITRICS_AGENT_ORIGIN: http://analytics-agent:8090
       ANALITRICS_DIRECT_AGENT: "true"
+      ANALITRICS_STREAM_SUBSCRIBER_TIMEOUT_MS: "${ANALITRICS_STREAM_SUBSCRIBER_TIMEOUT_MS:-15000}"
       # A product deployment must never serve an OpenID route without the
       # strategy registered. The API exits after bounded discovery retries.
       ANALITRICS_REQUIRE_OPENID: "${ANALITRICS_REQUIRE_OPENID:-true}"

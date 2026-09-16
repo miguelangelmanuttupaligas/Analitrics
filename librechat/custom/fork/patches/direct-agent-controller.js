@@ -79,6 +79,21 @@ async function getAnalitricsMemoryContext(req, userId) {
   }
 }
 
+const waitForAnalitricsStreamSubscriber = async (streamId, expectedCreatedAt, timeoutMs) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const job = await GenerationJobManager.getJob(streamId);
+    if (!job || job.createdAt !== expectedCreatedAt) {
+      return false;
+    }
+    if (job.metadata?.analitricsStreamSubscriberAttachedAt) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return false;
+};
+
 async function findExistingAnalitricsUserMessage(userId, messageId) {
   if (!messageId) {
     return null;
@@ -290,6 +305,10 @@ async function runAnalitricsDirectController(req, res, initializeClient, addTitl
   const model = process.env.ANALITRICS_MODEL || 'analitrics-agent';
   const sender = process.env.ANALITRICS_SENDER || 'Analitrics';
   const agentOrigin = process.env.ANALITRICS_AGENT_ORIGIN || 'http://analytics-agent:8090';
+  const streamSubscriberTimeoutMs = Math.min(
+    30000,
+    Math.max(1000, Number.parseInt(process.env.ANALITRICS_STREAM_SUBSCRIBER_TIMEOUT_MS || '15000', 10) || 15000),
+  );
   const tenantId = req.user?.tenantId || req.headers['x-tenant-id'] || 'analitrics';
   const maxActiveChats = Number(process.env.ANALITRICS_MAX_ACTIVE_CHATS_PER_USER || 50);
   const maxUserMessagesPerChat = Number(process.env.ANALITRICS_MAX_USER_MESSAGES_PER_CHAT || 100);
@@ -481,6 +500,18 @@ async function runAnalitricsDirectController(req, res, initializeClient, addTitl
   }
 
   res.json({ streamId, conversationId, status: 'started' });
+
+  const streamSubscriberAttached = await waitForAnalitricsStreamSubscriber(
+    streamId,
+    job.createdAt,
+    streamSubscriberTimeoutMs,
+  );
+  if (!streamSubscriberAttached) {
+    logger.warn('[AnalitricsDirectController] Starting without an attached stream subscriber', {
+      streamId,
+      timeoutMs: streamSubscriberTimeoutMs,
+    });
+  }
 
   const messageStepId = 'analitrics_message_' + responseMessageId;
   let messageStepStarted = false;
