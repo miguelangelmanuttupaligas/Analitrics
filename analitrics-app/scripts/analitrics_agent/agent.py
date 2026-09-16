@@ -106,6 +106,10 @@ class AnalyticalAgent:
             return result
         except Exception as exc:
             if "conversation/message with attachments" in str(exc):
+                answer = (
+                    "Necesito que cargues o mantengas en la conversación al menos un archivo "
+                    "CSV o Excel para poder analizar datos."
+                )
                 result = {
                     "question": request.question,
                     "run_id": request.run_id or "",
@@ -116,7 +120,7 @@ class AnalyticalAgent:
                     "plan": {"backend": env("ANALITRICS_ENGINE", "langgraph"), "sql": "", "rationale": "No data file available."},
                     "sql": "",
                     "rows": [],
-                    "answer": "Necesito que cargues o mantengas en la conversación al menos un archivo CSV o Excel para poder analizar datos.",
+                    "answer": answer,
                     "critic": {"approved": True, "issues": [], "backend": env("ANALITRICS_ENGINE", "langgraph")},
                     "chart_spec": {"chart_required": False, "reason": "No data file available."},
                     "cache_path": "",
@@ -124,6 +128,11 @@ class AnalyticalAgent:
                     "engine": env("ANALITRICS_ENGINE", "langgraph"),
                     "trace_id": trace_id or "",
                 }
+                # Emit the fallback through the same SSE token path as a normal
+                # analytical answer. LibreChat renders this reliably while a
+                # final-only response can appear as an empty assistant message.
+                if token is not None:
+                    token(answer)
                 self._run_repository.save_run(request, result, trace_id=trace_id)
                 return result
             self._run_repository.save_run(request, result, error=str(exc), trace_id=trace_id)
